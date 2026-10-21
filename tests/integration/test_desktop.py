@@ -8,7 +8,7 @@ import pytest
 pytest.importorskip("PySide6")
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QInputDialog
 from vdc.app.fixtures import make_fixture
 from vdc.app.session import new_capture, read_capture
 from vdc.capture.region import Region
@@ -77,6 +77,8 @@ def test_worker_pause_failure_recovery_and_finish(app, tmp_path):
         wait_for(app, lambda: bool(problems))
         assert read_capture(tmp_path)["needs_recovery"]
         assert SegmentStore(tmp_path).state["height"] == 360
+        assert (tmp_path / "diagnostics" / "failure.json").exists()
+        assert len(list((tmp_path / "diagnostics").glob("*.png"))) == 3
         frame[0] = fixture.canvas[120:480]
         worker.resume()
         wait_for(app, lambda: read_capture(tmp_path).get("height") == 480)
@@ -132,6 +134,29 @@ def test_stationary_capture_does_not_write_additional_files(tmp_path):
     before = {p.name: p.stat().st_mtime_ns for p in tmp_path.iterdir()}
     assert store.add(frame).status == "stationary"
     assert before == {p.name: p.stat().st_mtime_ns for p in tmp_path.iterdir()}
+
+
+def test_window_calibration_replaces_provisional_segments(app, tmp_path, monkeypatch):
+    store = SegmentStore(tmp_path / "session")
+    store.add(np.full((1600, 640, 3), 255, np.uint8))
+    window = MainWindow(tmp_path)
+    errors = []
+    monkeypatch.setattr(window, "error", errors.append)
+    monkeypatch.setattr(QInputDialog, "getInt", lambda *a, **k: (25, True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    try:
+        window.load_directory(store.directory)
+        wait_for(app, lambda: window.job is None and window.review is not None)
+        for key, value in {"left": 40, "right": 600, "top": 20, "bottom": 520}.items():
+            window.bounds[key].setValue(value)
+        window.calibrate()
+        wait_for(app, lambda: window.job is None)
+        assert not errors
+        assert len(window.review.pages) == 4
+        assert window.review.geometry["source"] == "manual"
+        assert all(not p.complete for p in window.review.pages)
+    finally:
+        window.close()
 
 
 def test_second_writer_is_rejected_without_changing_session(app, tmp_path):

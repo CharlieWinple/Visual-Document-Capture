@@ -5,13 +5,12 @@ import time
 import sys
 import json
 from datetime import datetime, timezone
-import numpy as np
 from PySide6.QtCore import QThread, Signal, QLockFile
 from vdc.app.session import read_capture, write_json
 from vdc.capture.source import ScreenSource
-from vdc.capture.stability import StableFrames
+from vdc.capture.tracker import ContinuousTracker
+from PIL import Image
 from vdc.stitching.store import SegmentStore
-from vdc.stitching.alignment import Alignment
 
 
 class CaptureWorker(QThread):
@@ -55,7 +54,7 @@ class CaptureWorker(QThread):
             return
         source = None
         metadata = {}
-        stable = StableFrames()
+        tracker = None
 
         def persist(state=None, **extra):
             if state:
@@ -71,14 +70,15 @@ class CaptureWorker(QThread):
         try:
             metadata = read_capture(self.directory)
             store = SegmentStore(self.directory)
+            tracker = ContinuousTracker(store)
             persist("starting")
             if self.stop_event.wait(self.delay):
                 persist("cancelled" if self.cancelled else "reviewing")
                 return
             source = self.source_factory(self.region)
             persist("capturing")
-            last_notice = time.monotonic()
             while not self.stop_event.is_set():
+                tick = time.monotonic()
                 if self.own_window_visible():
                     self.pause_event.set()
                 if self.pause_event.is_set():
@@ -87,33 +87,41 @@ class CaptureWorker(QThread):
                     self.stop_event.wait(0.10)
                     continue
                 if self.reset_event.is_set():
-                    stable.reset()
+                    tracker.reset()
                     self.reset_event.clear()
                     persist("capturing")
                 frame = source.grab()
                 if self.stop_event.is_set() or self.pause_event.is_set() or self.own_window_visible():
                     continue
-                if not stable.observe(frame):
-                    if time.monotonic() - last_notice > 2:
-                        self.progress.emit({**metadata, "notice": "等待画面稳定，请每次滚动后稍作停顿"})
-                        last_notice = time.monotonic()
-                    self.stop_event.wait(0.12)
-                    continue
-                if store.previous is not None and np.array_equal(frame, store.previous):
-                    result = Alignment("stationary", 0, 1.0, "unchanged_observation")
-                else:
-                    result = store.add(frame)
+                tracked = tracker.observe(frame)
+                result = tracked.alignment
                 if not result.accepted:
-                    self.pause_event.set()
-                    persist("needs_recovery", needs_recovery=True, error=result.reason)
-                    self.problem.emit(result.reason)
+                    if metadata.get("state") != tracked.state or metadata.get("error") != result.reason:
+                        persist(tracked.state, needs_recovery=True, error=result.reason, quality=0,
+                                notice="位置暂待确认；可继续缓慢滚动，无法验证时将暂停，请勿加速")
+                    if tracked.state == "needs_recovery":
+                        self.pause_event.set()
+                        diagnostics = self.directory / "diagnostics"
+                        diagnostics.mkdir(exist_ok=True)
+                        for name, pixels in (("reference", store.previous), ("first-failed", tracker.first_failed),
+                                             ("last-failed", tracker.last_failed)):
+                            if pixels is not None:
+                                Image.fromarray(pixels).save(diagnostics / f"{name}.png")
+                        write_json(diagnostics / "failure.json", {"reason": result.reason,
+                            "trusted_position": store.state["position"], "pending_frames": tracker.pending_count})
+                        self.problem.emit(result.reason)
+                    self.stop_event.wait(max(.01, .06 - (time.monotonic()-tick)))
                     continue
                 changed = result.status not in ("stationary",)
                 if changed or metadata.get("needs_recovery"):
                     persist("capturing", needs_recovery=False, error="", height=store.state["height"],
                             position=store.state["position"], quality=result.confidence,
+                            notice="已从视觉重叠恢复位置" if tracked.recovered else "",
                             accepted_frames=metadata.get("accepted_frames", 0) + int(changed))
-                self.stop_event.wait(0.20 if result.status == "stationary" else 0.10)
+                # Processing cost counts toward the target interval. Slow down
+                # idle sampling, but do not require stable frames while moving.
+                target = .10 if result.status == "stationary" else .06
+                self.stop_event.wait(max(.005, target - (time.monotonic()-tick)))
             persist("cancelled" if self.cancelled else "reviewing")
         except Exception as exc:
             try:

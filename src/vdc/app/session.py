@@ -44,10 +44,11 @@ def new_capture(directory, region):
 
 
 class Review:
-    def __init__(self, pages, warnings, width, height):
+    def __init__(self, pages, warnings, width, height, geometry=None):
         self.pages = list(pages)
         self.warnings = list(warnings)
         self.width, self.height = width, height
+        self.geometry = geometry
         for page in self.pages:
             self.validate(page)
 
@@ -58,7 +59,7 @@ class Review:
     def update(self, index, left, top, right, bottom):
         old = self.pages[index]
         page = replace(old, left=left, top=top, right=right, bottom=bottom,
-                       confidence=min(old.confidence, 0.7), complete=False)
+                       confidence=min(old.confidence, 0.7), complete=False, source="manual")
         self.validate(page)
         self.pages[index] = page
 
@@ -66,8 +67,8 @@ class Review:
         page = self.pages[index]
         if not page.top < at < page.bottom:
             raise ValueError("拆分位置必须位于页面内部")
-        self.pages[index:index + 1] = [replace(page, bottom=at, complete=False, confidence=0.5),
-                                     replace(page, top=at, complete=False, confidence=0.5)]
+        self.pages[index:index + 1] = [replace(page, bottom=at, complete=False, confidence=0.5, source="manual"),
+                                     replace(page, top=at, complete=False, confidence=0.5, source="manual")]
         self.renumber()
 
     def merge(self, index):
@@ -75,7 +76,7 @@ class Review:
             raise ValueError("没有下一页可合并")
         a, b = self.pages[index:index + 2]
         self.pages[index:index + 2] = [PageBoundary(a.page_id, min(a.left, b.left), min(a.top, b.top),
-            max(a.right, b.right), max(a.bottom, b.bottom), 0.5, False)]
+            max(a.right, b.right), max(a.bottom, b.bottom), 0.5, False, "manual")]
         self.renumber()
 
     def delete(self, index):
@@ -87,7 +88,8 @@ class Review:
 
     def save(self, directory):
         write_json(Path(directory) / "review.json", {"version": 1, "width": self.width,
-                   "height": self.height, "pages": [asdict(p) for p in self.pages], "warnings": self.warnings})
+                   "height": self.height, "pages": [asdict(p) for p in self.pages], "warnings": self.warnings,
+                   "geometry": self.geometry})
 
     @classmethod
     def load(cls, directory, width, height):
@@ -97,10 +99,10 @@ class Review:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("version") != 1 or data["width"] != width or data["height"] != height:
             return None
-        return cls([PageBoundary(**p) for p in data["pages"]], data["warnings"], width, height)
+        return cls([PageBoundary(**p) for p in data["pages"]], data["warnings"], width, height, data.get("geometry"))
 
     def pagination(self):
-        return PaginationResult(self.pages, self.warnings)
+        return PaginationResult(self.pages, self.warnings, self.geometry)
 
     def export_warnings(self, capture):
         warnings = list(self.warnings)

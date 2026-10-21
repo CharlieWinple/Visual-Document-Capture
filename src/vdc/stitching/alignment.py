@@ -36,14 +36,16 @@ def estimate_scroll_offset(previous: np.ndarray, current: np.ndarray) -> Alignme
         return gray, edge
     a, ea = features(previous)
     b, eb = features(current)
-    if min(np.mean(ea), np.mean(eb)) < 0.35:
+    # Faint moving watermarks still carry position information. Completely
+    # uniform paper (including stationary vertical margins) does not.
+    if min(np.mean(ea), np.mean(eb)) < 0.04:
         return Alignment("failed", None, 0.0, "insufficient_texture")
     band = max(24, h // 10)
     overlap_min = max(64, h // 4)
     candidates = {0}
     for y in np.linspace(1, h - band, 7, dtype=int):
         template = eb[y:y + band]
-        if np.mean(template) < 0.35:
+        if np.mean(template) < 0.04:
             continue
         scores = cv2.matchTemplate(ea, template, cv2.TM_CCOEFF_NORMED).ravel()
         # Multiple peaks must survive proposal generation to detect repeated text.
@@ -62,7 +64,7 @@ def estimate_scroll_offset(previous: np.ndarray, current: np.ndarray) -> Alignme
         pa, pb = a[lo:hi], b[lo - d:hi - d]
         ga, gb = ea[lo:hi], eb[lo - d:hi - d]
         energy = float(np.mean(ga) + np.mean(gb))
-        if energy < 0.7:
+        if energy < 0.08:
             continue
         pixel_error = float(np.mean(np.abs(pa - pb)))
         edge_error = float(np.mean(np.abs(ga - gb))) / energy

@@ -16,7 +16,7 @@ from vdc.app.session import Review, new_capture, read_capture
 from vdc.capture.region import Region
 from vdc.capture.worker import CaptureWorker
 from vdc.export.pdf import export_session
-from vdc.pagination.detector import PageBoundary, detect_page_boundaries
+from vdc.pagination.detector import PageBoundary, detect_page_boundaries, calibrate_page_boundaries
 from vdc.stitching.store import SegmentStore
 from .images import pixmap
 from .jobs import Job
@@ -38,6 +38,9 @@ def warning_text(value):
     if value.startswith("uncertain_paper_geometry"):
         return "存在无法确认的纸张轮廓，请检查是否漏页"
     return {"no_reliable_page_boundaries": "未能可靠识别原始分页",
+            "page_geometry_conflict_requires_review": "部分页面与学习到的尺寸不符，请检查页间隔或混合尺寸页",
+            "calibrated_boundaries_require_review": "有根据标定推算的页边，尚未获得视觉验证，请逐页确认",
+            "geometry_assisted_boundaries_require_review": "部分页间隔由同尺寸规律辅助定位，视觉证据较弱，请检查",
             "incomplete_or_uncertain_pages_require_review": "存在不完整或不确定页面，需要逐页检查"}.get(value, value)
 
 
@@ -52,10 +55,10 @@ def load_review(directory, force=False):
         if not result.pages:
             # Explicit provisional slices keep otherwise inaccessible content
             # editable. Never label these as recovered original pages.
-            result.pages = [PageBoundary(i + 1, 0, top, width, min(height, top + 1600), 0, False)
+            result.pages = [PageBoundary(i + 1, 0, top, width, min(height, top + 1600), 0, False, "provisional")
                             for i, top in enumerate(range(0, height, 1600))]
             result.warnings.append("未识别原始分页：以下是每 1600 像素一段的待校正内容，请拆分/合并/裁切")
-        review = Review(result.pages, result.warnings, width, height)
+        review = Review(result.pages, result.warnings, width, height, result.geometry)
         review.save(directory)
     thumbs = []
     for page in review.pages:
@@ -130,7 +133,7 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         self.status.setStyleSheet("background: #e9f2f6; color: #173c50; padding: 12px; border-radius: 6px;")
         layout.addWidget(self.status)
-        self.warning = QLabel("采集时窗口会最小化；点击任务栏恢复此窗口会自动暂停。每次滚动不超过半屏，并稍作停顿。")
+        self.warning = QLabel("支持缓慢连续滚动；主窗口恢复时自动暂停。位置待确认时请减速，无法验证时会暂停提示回滚。")
         self.warning.setWordWrap(True)
         self.warning.setStyleSheet("color: #8a4b06;")
         layout.addWidget(self.warning)
@@ -176,6 +179,7 @@ class MainWindow(QMainWindow):
         self.merge_button = self._button("与下一页合并", self.merge_page, edit)
         self.delete_button = self._button("删除此页", self.delete_page, edit)
         self.redetect_button = self._button("重新识别分页", self.redetect, edit)
+        self.calibrate_button = self._button("以此页标定", self.calibrate, edit)
         edit.addStretch()
         pane_layout.addLayout(edit)
         split.addWidget(pane)
@@ -224,7 +228,7 @@ class MainWindow(QMainWindow):
         self.pages.setEnabled(not busy and not running)
         has_pages = self.review is not None and bool(self.review.pages)
         selected = has_pages and self.pages.currentRow() >= 0
-        for button in [self.apply_button, self.split_button, self.merge_button, self.delete_button]:
+        for button in [self.apply_button, self.split_button, self.merge_button, self.delete_button, self.calibrate_button]:
             button.setEnabled(not busy and not running and selected)
         self.redetect_button.setEnabled(not busy and not running and self.store is not None)
         self.export_button.setEnabled(not busy and not running and has_pages)
@@ -371,7 +375,7 @@ class MainWindow(QMainWindow):
 
     def capture_progress(self, data):
         self.metadata = data
-        states = {"starting": "准备采集", "capturing": "采集中", "paused": "已暂停",
+        states = {"starting": "准备采集", "capturing": "采集中", "paused": "已暂停", "pending": "位置暂待确认",
                   "needs_recovery": "需要回滚恢复", "reviewing": "准备预览", "cancelled": "已停止", "error": "采集异常"}
         label = states.get(data.get("state"), "就绪")
         self.status.setText(f"{label} · 有效帧 {data.get('accepted_frames', 0)} · 已保存高度 {data.get('height', 0)} px · "
@@ -423,7 +427,7 @@ class MainWindow(QMainWindow):
         def loaded(result):
             self.directory = directory
             self.metadata = read_capture(directory)
-            if self.metadata.get("state") in ("capturing", "starting", "paused"):
+            if self.metadata.get("state") in ("capturing", "starting", "paused", "pending"):
                 self.metadata["needs_recovery"] = True
             self.region = Region(**self.metadata["region"]) if self.metadata.get("region") else None
             self.store, self.review, thumbs = result
@@ -437,7 +441,15 @@ class MainWindow(QMainWindow):
         self.pages.clear()
         for page, thumb in zip(self.review.pages, thumbs, strict=True):
             badge = "完整" if page.complete and page.confidence >= 0.8 else "待检查"
-            item = QListWidgetItem(QIcon(pixmap(thumb)), f"第 {page.page_id} 页 · {badge}\n{page.right-page.left} × {page.bottom-page.top} px")
+            if page.source == "provisional":
+                name, badge = "内容段", "未识别分页"
+            else:
+                name = "页"
+                if page.source == "calibrated":
+                    badge = "标定推算 · 待验证"
+                elif page.source == "geometry_verified":
+                    badge = "尺寸辅助 · 待检查"
+            item = QListWidgetItem(QIcon(pixmap(thumb)), f"第 {page.page_id} {name} · {badge}\n{page.right-page.left} × {page.bottom-page.top} px")
             item.setSizeHint(QSize(170, 230))
             if not page.complete or page.confidence < 0.8:
                 item.setForeground(QColor("#9b5607"))
@@ -445,6 +457,10 @@ class MainWindow(QMainWindow):
         self.pages.blockSignals(False)
         warnings = self.review.export_warnings(self.metadata)
         self.warning.setText("；".join(map(warning_text, warnings)) if warnings else "分页已识别。建议逐页检查页眉、页脚和边界后再导出。")
+        if self.review.geometry:
+            g = self.review.geometry
+            method = "自动学习" if g["source"] == "learned" else "人工标定"
+            self.warning.setText(self.warning.text() + f"\n{method}：页高约 {g['height']} px，页间距约 {g['gap']} px，周期约 {g['period']} px。")
         self.status.setText(f"分页预览 · {len(self.review.pages)} 页 · 修改会自动保存到本地会话")
         self.scene.clear()
         self.pages.setCurrentRow(min(selected, len(self.review.pages) - 1))
@@ -479,7 +495,7 @@ class MainWindow(QMainWindow):
             return
         try:
             # Work on a copy; a failed disk write must not publish unsaved edits.
-            updated = Review(self.review.pages, self.review.warnings, self.review.width, self.review.height)
+            updated = Review(self.review.pages, self.review.warnings, self.review.width, self.review.height, self.review.geometry)
             operation(updated, index)
             updated.save(self.directory)
             self.review = updated
@@ -512,6 +528,34 @@ class MainWindow(QMainWindow):
     def redetect(self):
         if QMessageBox.question(self, "重新分页", "重新检测会替换当前分页修改，是否继续？") == QMessageBox.StandardButton.Yes:
             self.load_directory(self.directory, force=True)
+
+    def calibrate(self):
+        if not self.review or self.job or self.worker or self.pages.currentRow() < 0:
+            return
+        # Read the coordinate controls directly so a provisional segment can be
+        # expanded to one complete page before calibration.
+        values = {key: spin.value() for key, spin in self.bounds.items()}
+        anchor = PageBoundary(0, **values, confidence=.5, complete=False, source="manual")
+        try:
+            self.review.validate(anchor)
+        except ValueError as exc:
+            self.error(exc)
+            return
+        gap, ok = QInputDialog.getInt(self, "一页标定", "请先将四边坐标调整为一张完整页面。\n输入相邻页面间距（像素，不是页高）：",
+                                      (self.review.geometry or {}).get("gap", 20), 0, max(0, (anchor.bottom-anchor.top)//4))
+        if not ok:
+            return
+        if QMessageBox.question(self, "应用同尺寸标定", "将按当前完整页和间距重建分页列表。未获视觉验证的页边仍会标为待确认。是否替换当前分页编辑？") != QMessageBox.StandardButton.Yes:
+            return
+        def work():
+            result = calibrate_page_boundaries(self.store.iter_blocks(), anchor, gap)
+            review = Review(result.pages, result.warnings, self.store.state["width"], self.store.state["height"], result.geometry)
+            review.save(self.directory)
+            return load_review(self.directory)
+        def shown(result):
+            self.store, self.review, thumbs = result
+            self.present_review(thumbs)
+        self.run_job(work, shown, "正在验证标定页与其他页面的尺寸…")
 
     def export_pdf(self):
         if not self.review or self.job or self.worker:

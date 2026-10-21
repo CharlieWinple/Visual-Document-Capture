@@ -36,6 +36,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--screen", type=int, default=0)
     parser.add_argument("--pages", type=int, default=6)
+    parser.add_argument("--continuous-speed", type=float, default=0,
+                        help="Logical pixels/second; move without waiting for capture between frames")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
@@ -91,6 +93,21 @@ def main():
         positions.append(area.verticalScrollBar().maximum())
     started = time.monotonic()
     try:
+        if args.continuous_speed > 0:
+            deadline = time.monotonic() + 8
+            while not events or events[-1].get("height", 0) == 0:
+                pump(app, .02)
+                if problems or time.monotonic() > deadline:
+                    raise AssertionError(f"Initial capture failed: {problems}")
+            moving_started = time.monotonic()
+            maximum = area.verticalScrollBar().maximum()
+            while area.verticalScrollBar().value() < maximum:
+                area.verticalScrollBar().setValue(min(maximum, round(
+                    (time.monotonic() - moving_started) * args.continuous_speed)))
+                pump(app, .016)
+                if problems:
+                    raise AssertionError(f"Continuous capture failed: {problems}")
+            positions = [maximum]
         for index, position in enumerate(positions):
             area.verticalScrollBar().setValue(position)
             deadline = time.monotonic() + 8
@@ -115,6 +132,8 @@ def main():
     result = {"screen": screen.name(), "dpr": screen.devicePixelRatio(), "region": expected.as_dict(),
               "source_pages": args.pages, "detected_pages": len(review.pages), "warnings": review.warnings,
               "frames": len(positions), "seconds": round(time.monotonic() - started, 3),
+              "continuous_speed": args.continuous_speed,
+              "accepted_frames": events[-1].get("accepted_frames", 0) if events else 0,
               "problems": problems, "pages": [p.__dict__ for p in review.pages]}
     if len(review.pages) == len(fixture.bounds):
         scale = screen.devicePixelRatio()
