@@ -1,1 +1,1 @@
-"""Screen capture adapters are scheduled for Phase 1."""
+"""Screen capture, stable-frame filtering and bounded threaded processing."""

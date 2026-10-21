@@ -23,3 +23,11 @@ def test_no_visible_paper_edges_reports_unknown():
     result = detect_page_boundaries([(0, np.full((500, 600, 3), 255, np.uint8))])
     assert not result.pages
     assert "no_reliable_page_boundaries" in result.warnings
+
+
+def test_thin_reader_border_does_not_hide_visible_paper_edges():
+    fixture = make_fixture()
+    fixture.canvas[:, -1] = 243
+    result = detect_page_boundaries([(0, fixture.canvas)])
+    assert not result.warnings
+    assert [(p.left, p.top, p.right, p.bottom) for p in result.pages] == fixture.bounds

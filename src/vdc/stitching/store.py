@@ -19,15 +19,31 @@ class SegmentStore:
             self.state = json.loads(self.manifest_path.read_text(encoding="utf-8"))
             if self.state["version"] != 1:
                 raise ValueError("Unsupported session version")
+            expected_top = 0
             for block in self.state["blocks"]:
+                self._safe_filename(block["file"])
+                if block["top"] != expected_top or block["height"] <= 0:
+                    raise ValueError("Stored blocks are not contiguous")
                 with Image.open(self.directory / block["file"]) as image:
                     image.load()
                     if image.size != (self.state["width"], block["height"]):
                         raise ValueError("Invalid stored block")
+                expected_top += block["height"]
+            if expected_top != self.state["height"]:
+                raise ValueError("Stored height does not match block coverage")
         ref = self.state["reference"]
         self.previous = self._load(ref) if ref else None
+        if self.previous is not None and (self.previous.shape[1] != self.state["width"]
+                or not 0 <= self.state["position"] <= self.state["height"] - len(self.previous)):
+            raise ValueError("Invalid reference frame or position")
+
+    @staticmethod
+    def _safe_filename(filename):
+        if not isinstance(filename, str) or not filename or Path(filename).name != filename or "/" in filename or "\\" in filename:
+            raise ValueError("Invalid session image filename")
 
     def _load(self, filename):
+        self._safe_filename(filename)
         with Image.open(self.directory / filename) as image:
             return np.array(image.convert("RGB"))
 
@@ -43,6 +59,8 @@ class SegmentStore:
                   else estimate_scroll_offset(self.previous, frame))
         if not result.accepted:
             return result  # Reference and position remain at last trusted frame.
+        if self.previous is not None and result.offset == 0:
+            return result  # Stationary observations do not rewrite PNGs or manifest.
         position = self.state["position"] + result.offset
         if position < 0:
             return Alignment("failed", None, 0, "before_session_start")

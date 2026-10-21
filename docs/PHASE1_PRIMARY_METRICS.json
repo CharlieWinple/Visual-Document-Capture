@@ -1,0 +1,199 @@
+{
+  "screen": "Q24G4",
+  "dpr": 1.5,
+  "region": {
+    "left": 92,
+    "top": 140,
+    "width": 960,
+    "height": 639
+  },
+  "source_pages": 20,
+  "detected_pages": 20,
+  "warnings": [],
+  "frames": 99,
+  "seconds": 42.107,
+  "problems": [],
+  "pages": [
+    {
+      "page_id": 1,
+      "left": 150,
+      "top": 22,
+      "right": 808,
+      "bottom": 950,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 2,
+      "left": 105,
+      "top": 959,
+      "right": 853,
+      "bottom": 2008,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 3,
+      "left": 60,
+      "top": 2027,
+      "right": 898,
+      "bottom": 2671,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 4,
+      "left": 150,
+      "top": 2717,
+      "right": 808,
+      "bottom": 3646,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 5,
+      "left": 105,
+      "top": 3674,
+      "right": 853,
+      "bottom": 4723,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 6,
+      "left": 60,
+      "top": 4732,
+      "right": 898,
+      "bottom": 5376,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 7,
+      "left": 150,
+      "top": 5395,
+      "right": 808,
+      "bottom": 6324,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 8,
+      "left": 105,
+      "top": 6370,
+      "right": 853,
+      "bottom": 7419,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 9,
+      "left": 60,
+      "top": 7447,
+      "right": 898,
+      "bottom": 8091,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 10,
+      "left": 150,
+      "top": 8099,
+      "right": 808,
+      "bottom": 9028,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 11,
+      "left": 105,
+      "top": 9047,
+      "right": 853,
+      "bottom": 10096,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 12,
+      "left": 60,
+      "top": 10142,
+      "right": 898,
+      "bottom": 10786,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 13,
+      "left": 150,
+      "top": 10814,
+      "right": 808,
+      "bottom": 11743,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 14,
+      "left": 105,
+      "top": 11752,
+      "right": 853,
+      "bottom": 12801,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 15,
+      "left": 60,
+      "top": 12820,
+      "right": 898,
+      "bottom": 13464,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 16,
+      "left": 150,
+      "top": 13510,
+      "right": 808,
+      "bottom": 14439,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 17,
+      "left": 105,
+      "top": 14467,
+      "right": 853,
+      "bottom": 15516,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 18,
+      "left": 60,
+      "top": 15525,
+      "right": 898,
+      "bottom": 16169,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 19,
+      "left": 150,
+      "top": 16188,
+      "right": 808,
+      "bottom": 17117,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 20,
+      "left": 105,
+      "top": 17163,
+      "right": 853,
+      "bottom": 18212,
+      "confidence": 0.95,
+      "complete": true
+    }
+  ],
+  "max_page_edge_error_px": 2
+}

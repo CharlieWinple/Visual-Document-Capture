@@ -1,1 +1,1 @@
-"""Selection and page review UI are scheduled for Phase 1."""
+"""Desktop selection, capture controls and page review UI."""

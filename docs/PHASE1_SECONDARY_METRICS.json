@@ -1,0 +1,73 @@
+{
+  "screen": "\\\\.\\DISPLAY2",
+  "dpr": 2.0,
+  "region": {
+    "left": -2436,
+    "top": 35,
+    "width": 1280,
+    "height": 832
+  },
+  "source_pages": 6,
+  "detected_pages": 6,
+  "warnings": [],
+  "frames": 28,
+  "seconds": 13.93,
+  "problems": [],
+  "pages": [
+    {
+      "page_id": 1,
+      "left": 201,
+      "top": 29,
+      "right": 1079,
+      "bottom": 1267,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 2,
+      "left": 141,
+      "top": 1279,
+      "right": 1139,
+      "bottom": 2677,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 3,
+      "left": 81,
+      "top": 2703,
+      "right": 1199,
+      "bottom": 3561,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 4,
+      "left": 201,
+      "top": 3623,
+      "right": 1079,
+      "bottom": 4861,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 5,
+      "left": 141,
+      "top": 4899,
+      "right": 1139,
+      "bottom": 6297,
+      "confidence": 0.95,
+      "complete": true
+    },
+    {
+      "page_id": 6,
+      "left": 81,
+      "top": 6309,
+      "right": 1199,
+      "bottom": 7167,
+      "confidence": 0.95,
+      "complete": true
+    }
+  ],
+  "max_page_edge_error_px": 1
+}

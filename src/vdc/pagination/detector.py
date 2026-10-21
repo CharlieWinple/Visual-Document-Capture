@@ -32,13 +32,17 @@ def detect_page_boundaries(blocks) -> PaginationResult:
         expected_top += h
         for row in image:
             gray = row.mean(axis=1)
-            sides = np.concatenate((gray[:4], gray[-4:]))
+            # A one-pixel reader/window border may enter a fractional-DPI
+            # selection. Robust side statistics ignore isolated border pixels,
+            # but still reject missing margins and inconsistent backgrounds.
+            sides = np.concatenate((gray[:8], gray[-8:]))
             background = float(np.median(sides))
-            if background > 225 or np.ptp(sides) > 15:
+            side_difference = abs(float(np.median(gray[:8])) - float(np.median(gray[-8:])))
+            if background > 225 or side_difference > 15 or np.median(np.abs(sides - background)) > 10:
                 rows.append(None)
                 invalid += 1
                 continue
-            white = np.flatnonzero(gray >= 245)
+            white = np.flatnonzero(gray[4:-4] >= 245) + 4
             if len(white) == 0:
                 rows.append(None)
                 continue
