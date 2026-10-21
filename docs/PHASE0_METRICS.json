@@ -1,0 +1,146 @@
+{
+  "python": "3.13.0",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "dependencies": {
+    "numpy": "2.5.4",
+    "opencv-python-headless": "4.14.0.94",
+    "PyMuPDF": "1.28.2",
+    "Pillow": "12.3.0"
+  },
+  "sequences": [
+    {
+      "name": "sample",
+      "seed": 42,
+      "step": 115,
+      "expected_pages": 6,
+      "frames_checked": 33,
+      "accepted": 33,
+      "false_rejections": 0,
+      "incorrect_acceptances": 0,
+      "max_offset_error_px": 0,
+      "missing_rows": 0,
+      "extra_rows": 0,
+      "mismatched_pixels": 0,
+      "detected_pages": 6,
+      "missed_pages": 0,
+      "false_pages": 0,
+      "page_precision": 1.0,
+      "page_recall": 1.0,
+      "complete_pages": 6,
+      "pdf_page_count": 6,
+      "pdf_pixels_and_order_exact": true,
+      "seconds": 3.158,
+      "warnings": [],
+      "sampled_process_peak_mib": 97.28
+    },
+    {
+      "name": "fast",
+      "seed": 17,
+      "step": 205,
+      "expected_pages": 6,
+      "frames_checked": 20,
+      "accepted": 20,
+      "false_rejections": 0,
+      "incorrect_acceptances": 0,
+      "max_offset_error_px": 0,
+      "missing_rows": 0,
+      "extra_rows": 0,
+      "mismatched_pixels": 0,
+      "detected_pages": 6,
+      "missed_pages": 0,
+      "false_pages": 0,
+      "page_precision": 1.0,
+      "page_recall": 1.0,
+      "complete_pages": 6,
+      "pdf_page_count": 6,
+      "pdf_pixels_and_order_exact": true,
+      "seconds": 2.218,
+      "warnings": [],
+      "sampled_process_peak_mib": 98.48
+    },
+    {
+      "name": "twenty_pages",
+      "seed": 91,
+      "step": 149,
+      "expected_pages": 20,
+      "frames_checked": 84,
+      "accepted": 84,
+      "false_rejections": 0,
+      "incorrect_acceptances": 0,
+      "max_offset_error_px": 0,
+      "missing_rows": 0,
+      "extra_rows": 0,
+      "mismatched_pixels": 0,
+      "detected_pages": 20,
+      "missed_pages": 0,
+      "false_pages": 0,
+      "page_precision": 1.0,
+      "page_recall": 1.0,
+      "complete_pages": 20,
+      "pdf_page_count": 20,
+      "pdf_pixels_and_order_exact": true,
+      "seconds": 8.306,
+      "warnings": [],
+      "sampled_process_peak_mib": 138.49
+    }
+  ],
+  "boundary_cases": [
+    {
+      "case": "no_overlap",
+      "expected": "reject",
+      "correct": true,
+      "status": "failed",
+      "offset": null,
+      "confidence": 0.0,
+      "reason": "no_reliable_overlap_or_render_changed"
+    },
+    {
+      "case": "blank_ambiguous_motion",
+      "expected": "reject",
+      "correct": true,
+      "status": "failed",
+      "offset": null,
+      "confidence": 0.0,
+      "reason": "insufficient_texture"
+    },
+    {
+      "case": "periodic_rows",
+      "expected": "reject",
+      "correct": true,
+      "status": "failed",
+      "offset": null,
+      "confidence": 0.0,
+      "reason": "ambiguous_repeated_content"
+    },
+    {
+      "case": "zoom_changed",
+      "expected": "reject",
+      "correct": true,
+      "status": "failed",
+      "offset": null,
+      "confidence": 0.0,
+      "reason": "no_reliable_overlap_or_render_changed"
+    },
+    {
+      "case": "viewport_changed",
+      "expected": "reject",
+      "correct": true,
+      "status": "failed",
+      "offset": null,
+      "confidence": 0.0,
+      "reason": "frame_size_changed"
+    },
+    {
+      "case": "white_reader_background",
+      "expected": "warn_no_pages",
+      "correct": true,
+      "reason": "unsupported_background_or_clipped_edges:360_rows; no_reliable_page_boundaries"
+    },
+    {
+      "case": "partial_first_last_pages",
+      "expected": "mark_incomplete",
+      "correct": true,
+      "reason": "incomplete_or_uncertain_pages_require_review"
+    }
+  ]
+}
