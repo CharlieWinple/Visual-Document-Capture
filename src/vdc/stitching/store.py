@@ -59,6 +59,22 @@ class SegmentStore:
                   else estimate_scroll_offset(self.previous, frame))
         if not result.accepted:
             return result  # Reference and position remain at last trusted frame.
+        return self._append(frame, result)
+
+    def add_geometry(self, frame, evidence):
+        """Persist an inferred position only after independently checking overlap."""
+        delta = evidence["position"]-self.state["position"]
+        if self.previous is None or frame.shape != self.previous.shape or frame.dtype != np.uint8:
+            raise ValueError("尺寸辅助连接的图像无效")
+        overlap = len(frame)-delta
+        if not 0 < delta <= len(frame)-max(64, len(frame)//4):
+            raise ValueError("尺寸辅助连接缺少足够重叠，不能补造未观察内容")
+        error = np.abs(self.previous[delta:].astype(np.int16)-frame[:overlap].astype(np.int16))
+        if np.mean(error) > 1 or np.mean(np.max(error, axis=2) > 8) > .001:
+            raise ValueError("尺寸辅助连接的重叠像素不一致")
+        return self._append(frame, Alignment("geometry_inferred", delta, .65, "page_height_requires_review"), evidence)
+
+    def _append(self, frame, result, evidence=None):
         if self.previous is not None and result.offset == 0:
             return result  # Stationary observations do not rewrite PNGs or manifest.
         position = self.state["position"] + result.offset
@@ -66,6 +82,8 @@ class SegmentStore:
             return Alignment("failed", None, 0, "before_session_start")
         state = dict(self.state)
         state["blocks"] = list(state["blocks"])
+        if evidence is not None:
+            state["geometry_joins"] = [*state.get("geometry_joins", []), evidence]
         h, w = frame.shape[:2]
         new_end = position + h
         if new_end > state["height"]:

@@ -41,7 +41,7 @@ def export_multipage_pdf(images, destination: str | Path, dpi: float = 96) -> in
 
 
 def export_session(store, pagination, destination, *, allow_uncertain=False):
-    if not allow_uncertain and (pagination.warnings or any(not p.complete for p in pagination.pages)):
+    if not allow_uncertain and (store.state.get("geometry_joins") or pagination.warnings or any(not p.complete for p in pagination.pages)):
         raise ValueError("Page boundaries require review before export")
     return export_multipage_pdf(
         (store.read_rows(p.top, p.bottom)[:, p.left:p.right] for p in pagination.pages), destination)

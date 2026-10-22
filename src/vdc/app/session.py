@@ -107,7 +107,7 @@ class Review:
     def export_warnings(self, capture):
         warnings = list(self.warnings)
         if capture.get("retained_fragments"):
-            warnings.append("存在独立保留的探测截图；它们未作为片段加入 PDF，请查看保留片段并核对是否有遗漏")
+            warnings.append("存在独立保留的探测截图，不会整批加入 PDF；连接情况见片段清单，请核对是否有遗漏")
         if capture.get("needs_recovery"):
             warnings.append("采集曾中断且尚未恢复，只能导出已确认的前段内容")
         if any(not p.complete or p.confidence < 0.8 for p in self.pages):

@@ -1,5 +1,6 @@
 """Phase 1 desktop workflow. Processing and capture are delegated to workers."""
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 import uuid
 import numpy as np
@@ -228,7 +229,7 @@ class MainWindow(QMainWindow):
         self.calibrate_button = self._button("可视化标定", self.calibrate, more)
         self.redetect_button = self._button("重新识别分页", self.redetect, more)
         self.fragments_button = self._button("查看保留片段", self.open_fragments, more)
-        self.fragments_button.setToolTip("打开独立探测截图文件夹。这些位置未确定的截图不包含在导出的 PDF 中。")
+        self.fragments_button.setToolTip("打开探测截图及连接记录文件夹。截图不会整批加入 PDF；连接情况请查看清单。")
         more.addStretch()
         self.delete_button = self._button("删除此页", self.delete_page, more)
         self.delete_button.setStyleSheet("color: #a23b3b;")
@@ -572,6 +573,14 @@ class MainWindow(QMainWindow):
         self.run_job(lambda: load_review(directory, force), loaded, "正在读取会话并识别分页…", quiet=quiet)
 
     def present_review(self, thumbs, selected=0):
+        joins = self.store.state.get("geometry_joins", [])
+        if joins:
+            self.review.pages = [replace(p, complete=False, confidence=min(p.confidence, .65), source="height_connected")
+                if any(j["position"] < p.bottom and j["end"] > p.top for j in joins) else p
+                for p in self.review.pages]
+            note = "存在页高辅助连接：位置由页面尺寸推算，请核对连接处、页序和内容；并非纯视觉定位确认"
+            if note not in self.review.warnings:
+                self.review.warnings.append(note)
         self.reviewed.setChecked(False)
         self.pages.blockSignals(True)
         self.pages.clear()
@@ -585,6 +594,8 @@ class MainWindow(QMainWindow):
                     badge = "标定推算 · 待验证"
                 elif page.source == "geometry_verified":
                     badge = "尺寸辅助 · 待检查"
+                elif page.source == "height_connected":
+                    badge = "页高连接 · 待检查"
             item = QListWidgetItem(QIcon(pixmap(thumb)), f"第 {page.page_id} {name} · {badge}\n{page.right-page.left} × {page.bottom-page.top} px")
             item.setSizeHint(QSize(170, 230))
             if not page.complete or page.confidence < 0.8:

@@ -100,6 +100,7 @@ class AutomaticCaptureWorker(CaptureWorker):
                             error=event.reason if event.state == "needs_recovery" else "",
                             notice=event.reason or notice,
                             retained_fragments=(self.directory / "fragments").exists(),
+                            geometry_connections=len(store.state.get("geometry_joins", [])),
                             scroll_commands=engine.commands, wheel_units=engine.units)
                     if event.state == "auto_finished":
                         persist("reviewing", needs_recovery=False, completion_reason="visible_bottom_and_no_motion",

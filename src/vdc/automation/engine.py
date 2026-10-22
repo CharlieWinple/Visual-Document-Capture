@@ -8,6 +8,7 @@ from PIL import Image
 from vdc.capture.stability import StableFrames
 from vdc.pagination.detector import detect_page_boundaries
 from vdc.stitching.alignment import estimate_scroll_offset
+from .geometry import learn_anchor, propose_connection
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ class AutoEngine:
         self.probe_count = 0
         self.probe_directory = None
         self.probe_manifest = None
+        self.geometry_anchor = None
 
     def finish_probe(self, status="interrupted"):
         manifest = getattr(self, "probe_manifest", None)
@@ -131,7 +133,23 @@ class AutoEngine:
     def probe_blank(self, frame, now):
         if self.probe_started is None:
             self.probe_started = now
+            self.geometry_anchor = learn_anchor(self.store)
         self.save_probe(frame, now)
+        evidence = propose_connection(self.store, frame, self.geometry_anchor)
+        if evidence is not None:
+            result = self.store.add_geometry(frame, evidence)
+            self.probe_manifest["connection"] = evidence
+            self.probe_manifest["connected"] = True
+            self.probe_manifest["note"] = "最终帧通过页高辅助定位并接入长图；推算位置需检查，其余探测图不自动拼接。"
+            self.save_probe(frame, now, "geometry_connected_requires_review")
+            self.probe_started = self.probe_directory = self.probe_manifest = None
+            self.geometry_anchor = None
+            self.probe_count = self.no_motion = self.retries = 0
+            self.stalled_since = None
+            event = self.command(30, now, "forward")
+            event.alignment = result
+            event.reason = "已按页高和重叠像素辅助连接，请在预览中检查尺寸推算位置"
+            return event
         has_texture = np.mean(texture_rows(frame)) >= .08
         exhausted = (self.probe_count >= self.BLANK_MAX_COMMANDS
                      or now-self.probe_started >= self.BLANK_MAX_SECONDS)
