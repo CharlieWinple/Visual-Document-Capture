@@ -60,7 +60,16 @@ def test_blank_does_not_guess_displacement(tmp_path):
     event = run(engine, reader)
     assert event.state == "needs_recovery"
     assert engine.store.state["height"] == 360
-    assert len(reader.calls) == 2  # Forward then one rollback; neither is visual proof.
+    assert len(reader.calls) == 1 + engine.BLANK_MAX_COMMANDS
+    assert reader.calls[0] == 60
+    assert all(value == 30 for value in reader.calls[1:])
+    import json
+    paths = list((tmp_path / "fragments").glob("*/manifest.json"))
+    assert len(paths) == 1
+    manifest = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert manifest["status"] == "unresolved"
+    assert len(manifest["frames"]) == 7
+    assert not manifest["connected"]
 
 
 def test_loading_animation_has_bounded_wait_and_no_initial_scroll(tmp_path):

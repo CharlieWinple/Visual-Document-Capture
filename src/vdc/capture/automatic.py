@@ -69,6 +69,8 @@ class AutomaticCaptureWorker(CaptureWorker):
                 if self.own_window_visible():
                     self.pause_event.set()
                 if self.pause_event.is_set():
+                    if engine is not None:
+                        engine.finish_probe()
                     if metadata.get("state") != "needs_recovery":
                         persist("paused")
                     self.stop_event.wait(.05)
@@ -97,6 +99,7 @@ class AutomaticCaptureWorker(CaptureWorker):
                             needs_recovery=engine.outstanding or event.state == "needs_recovery",
                             error=event.reason if event.state == "needs_recovery" else "",
                             notice=event.reason or notice,
+                            retained_fragments=(self.directory / "fragments").exists(),
                             scroll_commands=engine.commands, wheel_units=engine.units)
                     if event.state == "auto_finished":
                         persist("reviewing", needs_recovery=False, completion_reason="visible_bottom_and_no_motion",
@@ -127,6 +130,11 @@ class AutomaticCaptureWorker(CaptureWorker):
                 pass
             self.problem.emit(f"自动采集失败：{exc}")
         finally:
+            if engine is not None:
+                try:
+                    engine.finish_probe()
+                except OSError:
+                    pass  # Earlier images remain usable even if final metadata fails.
             if driver is not None and hasattr(driver, "close"):
                 try:
                     driver.close()

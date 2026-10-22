@@ -257,6 +257,45 @@ def test_automatic_mode_controls(app, tmp_path):
         window.close()
 
 
+def test_blank_probe_worker_preserves_fragments_after_stop_and_reopen(app, tmp_path):
+    import json
+    calls = []
+    class Source:
+        def __init__(self, region): pass
+        def grab(self): return np.full((360, 640, 3), 255, np.uint8)
+        def close(self): pass
+    class Driver:
+        def __init__(self, region): pass
+        def check(self): pass
+        def rearm(self): pass
+        def scroll(self, units): calls.append(units)
+    region = Region(0, 0, 640, 360)
+    new_capture(tmp_path, region)
+    worker = AutomaticCaptureWorker(tmp_path, region, source_factory=Source, driver_factory=Driver, delay=0)
+    problems = []
+    worker.problem.connect(problems.append)
+    worker.start()
+    try:
+        wait_for(app, lambda: bool(problems), timeout=15)
+        assert worker.pause_event.is_set()
+        assert len(calls) == 7
+        assert read_capture(tmp_path)["retained_fragments"]
+    finally:
+        worker.stop()
+        assert worker.wait(5000)
+    path = next((tmp_path / "fragments").glob("*/manifest.json"))
+    assert json.loads(path.read_text(encoding="utf-8"))["status"] == "unresolved"
+    window = MainWindow(tmp_path)
+    try:
+        window.load_directory(tmp_path)
+        wait_for(app, lambda: window.review is not None and window.job is None)
+        assert window.fragments_button.isEnabled()
+        assert "独立保留" in window.warning.text()
+        assert window.store.state["height"] == 360
+    finally:
+        window.close()
+
+
 @pytest.mark.parametrize("background", [False, True])
 def test_automatic_window_finishes_into_preview(app, tmp_path, monkeypatch, background):
     import vdc.gui.window as window_module

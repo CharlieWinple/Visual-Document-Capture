@@ -4,8 +4,8 @@ from pathlib import Path
 import uuid
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import Qt, QTimer, QSize, QEvent, QPoint
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import Qt, QTimer, QSize, QEvent, QPoint, QUrl
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
@@ -227,6 +227,8 @@ class MainWindow(QMainWindow):
         more.addWidget(QLabel("其他操作"))
         self.calibrate_button = self._button("可视化标定", self.calibrate, more)
         self.redetect_button = self._button("重新识别分页", self.redetect, more)
+        self.fragments_button = self._button("查看保留片段", self.open_fragments, more)
+        self.fragments_button.setToolTip("打开独立探测截图文件夹。这些位置未确定的截图不包含在导出的 PDF 中。")
         more.addStretch()
         self.delete_button = self._button("删除此页", self.delete_page, more)
         self.delete_button.setStyleSheet("color: #a23b3b;")
@@ -272,6 +274,7 @@ class MainWindow(QMainWindow):
             self.tray.show()
 
     def update_controls(self):
+        self.fragments_button.setEnabled(bool(self.directory and (self.directory / "fragments").exists()))
         busy = self.job is not None or self.selecting
         running = self.worker is not None
         self.automatic.setEnabled(not busy and not running)
@@ -493,6 +496,7 @@ class MainWindow(QMainWindow):
         self.metadata = data
         states = {"starting": "准备采集", "capturing": "采集中", "paused": "已暂停", "pending": "位置暂待确认",
                   "auto_waiting": "自动采集 · 等待并验证", "auto_rollback": "自动采集 · 回滚验证",
+                  "auto_blank_probe": "自动采集 · 空白探测（尚未连接）",
                   "auto_finished": "已到可见页底",
                   "needs_recovery": "需要回滚恢复", "reviewing": "准备预览", "cancelled": "已停止", "error": "采集异常"}
         label = states.get(data.get("state"), "就绪")
@@ -556,9 +560,10 @@ class MainWindow(QMainWindow):
                 self.undo_stack.clear()
             self.directory = directory
             self.metadata = read_capture(directory)
+            self.metadata["retained_fragments"] = (directory / "fragments").exists()
             self.auto_settings = AutoSettings(**self.metadata.get("auto_settings", {}))
             self.automatic.setChecked(self.metadata.get("mode") == "automatic")
-            if self.metadata.get("state") in ("capturing", "starting", "paused", "pending", "auto_waiting", "auto_rollback"):
+            if self.metadata.get("state") in ("capturing", "starting", "paused", "pending", "auto_waiting", "auto_rollback", "auto_blank_probe"):
                 self.metadata["needs_recovery"] = True
             self.region = Region(**self.metadata["region"]) if self.metadata.get("region") else None
             self.store, self.review, thumbs = result
@@ -598,6 +603,11 @@ class MainWindow(QMainWindow):
         self.scene.clear()
         self.pages.setCurrentRow(min(selected, len(self.review.pages) - 1))
         self.update_controls()
+
+    def open_fragments(self):
+        if self.directory and (self.directory / "fragments").exists():
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str((self.directory / "fragments").resolve()))):
+                self.error("无法打开片段文件夹：" + str(self.directory / "fragments"))
 
     def select_page(self, index):
         if self.review is None or index < 0 or index >= len(self.review.pages) or self.job:
