@@ -4,7 +4,7 @@ from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QGraphicsScene, QGraphicsView, QHBoxLayout,
-    QLabel, QPushButton, QSpinBox, QVBoxLayout,
+    QLabel, QPushButton, QSpinBox, QVBoxLayout, QGridLayout,
 )
 from .images import pixmap
 from .jobs import Job
@@ -234,11 +234,11 @@ class VisualEditor(QDialog):
     def __init__(self, pixels, top, page, mode="crop", gap=20, parent=None, store=None):
         super().__init__(parent)
         self.store, self.job = store, None
-        self.setWindowTitle({"crop": "拖拽裁切", "split": "拖动分页线", "calibrate": "可视化一页标定"}[mode])
+        self.setWindowTitle({"crop": "调整裁切", "split": "拆分页面", "calibrate": "可视化一页标定"}[mode])
         self.resize(1050, 780)
         layout = QVBoxLayout(self)
-        text = {"crop": "拖动蓝框四边或角点裁切；框外仍显示原始内容，可向外扩展。",
-                "split": "点击分界位置放置分页线，拖动微调，确认后拆成两页。",
+        text = {"crop": "蓝框内是这一页保留的内容。拖动四边或角点调整范围，也可向外拉回误裁内容；不会增加页数。",
+                "split": "将分割线拖到两页之间。也可直接点击分界位置放置线，确认后把当前页面拆成两页。",
                 "calibrate": "先将蓝框调整为一张完整页，再拖动橙线至下一页顶边；两线距离就是页间距。"}[mode]
         navigation = "使用滚动条平移视野。" if mode == "split" else "拖动框内空白处可平移视野。"
         hint = QLabel(text+" 滚轮缩放；选中边界后方向键微调，Shift 为 10 px。"+navigation)
@@ -261,21 +261,26 @@ class VisualEditor(QDialog):
         tools.addStretch()
         layout.addLayout(tools)
         self.view.cursor_position.connect(lambda x, y: self.position.setText(f"鼠标位置：x={x}, y={y} px"))
-        inputs = QHBoxLayout()
+        inputs = QGridLayout()
         self.spins = {}
-        fields = [("split", "分页位置")] if mode == "split" else [("left", "左"), ("top", "上"), ("right", "右"), ("bottom", "下")]
-        if mode == "calibrate": fields.append(("next", "下一页顶部"))
-        for key, label in fields:
-            inputs.addWidget(QLabel(label))
+        fields = [("split", "分割线 Y")] if mode == "split" else [("left", "左边界 X"), ("right", "右边界 X"), ("top", "上边界 Y"), ("bottom", "下边界 Y")]
+        if mode == "calibrate": fields.append(("next", "下一页顶部 Y"))
+        for i, (key, label) in enumerate(fields):
+            inputs.addWidget(QLabel(label), i // 2, (i % 2)*2)
             spin = QSpinBox()
             spin.setRange(0, int(self.view.extent.right()) if key in ("left", "right") else
                           store.state["height"] if store else int(self.view.extent.bottom()))
             spin.setSuffix(" px")
             spin.valueChanged.connect(lambda value, k=key: self.numeric_change(k, value))
             self.spins[key] = spin
-            inputs.addWidget(spin)
+            inputs.addWidget(spin, i // 2, (i % 2)*2+1)
         layout.addLayout(inputs)
+        note = QLabel("坐标以整条拼接长图左上角为 (0, 0)，向右为 X、向下为 Y；不是裁掉的像素数。右、下边界不包含在保留区域内。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #526577;")
+        layout.addWidget(note)
         self.summary = QLabel()
+        self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确认应用")

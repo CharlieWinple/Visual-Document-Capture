@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
-    QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QComboBox,
+    QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QComboBox, QGridLayout,
 )
 from vdc.app.session import Review, new_capture, read_capture
 from vdc.capture.region import Region
@@ -164,6 +164,9 @@ class MainWindow(QMainWindow):
         pane = QWidget()
         pane_layout = QVBoxLayout(pane)
         pane_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_heading = QLabel("页面预览 · 采集后可检查和调整页面")
+        self.page_heading.setStyleSheet("font-weight: 600; color: #174c66; padding: 6px;")
+        pane_layout.addWidget(self.page_heading)
         self.scene = QGraphicsScene()
         self.view = QGraphicsView(self.scene)
         self.view.setBackgroundBrush(QColor("#dfe5ea"))
@@ -173,29 +176,61 @@ class MainWindow(QMainWindow):
         self._button("适应窗口", self.fit_preview, zoom)
         self._button("放大", lambda: self.view.scale(1.25, 1.25), zoom)
         self._button("缩小", lambda: self.view.scale(0.8, 0.8), zoom)
-        self.visual_crop_button = self._button("拖拽裁切", lambda: self.visual_edit("crop"), zoom)
-        self.undo_button = self._button("撤销已应用修改", self.undo_edit, zoom)
         zoom.addStretch()
         pane_layout.addLayout(zoom)
-        crop = QHBoxLayout()
-        self.bounds = {}
-        for key, label in [("left", "左"), ("top", "上"), ("right", "右"), ("bottom", "下")]:
-            crop.addWidget(QLabel(label))
-            spin = QSpinBox()
-            spin.setRange(0, 2_000_000)
-            self.bounds[key] = spin
-            crop.addWidget(spin)
-        self.apply_button = self._button("应用裁切", self.apply_crop, crop)
-        pane_layout.addLayout(crop)
-        pane_layout.addWidget(QLabel("边界单位为重建内容的像素坐标；右、下边界不包含在页面内。"))
         edit = QHBoxLayout()
-        self.split_button = self._button("拖动分页线", self.split_page, edit)
+        edit.addWidget(QLabel("页面编辑"))
+        self.visual_crop_button = self._button("调整裁切", lambda: self.visual_edit("crop"), edit)
+        self.visual_crop_button.setToolTip("拖动蓝框调整这一页保留的范围；不会增加页数。")
+        self.split_button = self._button("拆分页面", self.split_page, edit)
+        self.split_button.setToolTip("将分割线拖到两页之间，把当前页面拆成两页。")
         self.merge_button = self._button("与下一页合并", self.merge_page, edit)
-        self.delete_button = self._button("删除此页", self.delete_page, edit)
-        self.redetect_button = self._button("重新识别分页", self.redetect, edit)
-        self.calibrate_button = self._button("可视化标定", self.calibrate, edit)
+        self.undo_button = self._button("撤销修改", self.undo_edit, edit)
         edit.addStretch()
         pane_layout.addLayout(edit)
+        self.precise_toggle = QPushButton("+ 精确调整 · 像素坐标")
+        self.precise_toggle.setCheckable(True)
+        self.precise_toggle.setStyleSheet("text-align: left; color: #174c66; border: none;")
+        pane_layout.addWidget(self.precise_toggle)
+        self.precise_panel = QWidget()
+        self.precise_panel.setObjectName("precisePanel")
+        precise = QVBoxLayout(self.precise_panel)
+        crop = QGridLayout()
+        self.bounds = {}
+        for i, (key, label) in enumerate([("left", "左边界 X"), ("right", "右边界 X"), ("top", "上边界 Y"), ("bottom", "下边界 Y")]):
+            crop.addWidget(QLabel(label), i // 2, (i % 2) * 2)
+            spin = QSpinBox()
+            spin.setRange(0, 2_000_000)
+            spin.setSuffix(" px")
+            spin.setToolTip("在整条拼接长图中的边界坐标，不是裁掉的像素数；预览缩放不影响数值。")
+            self.bounds[key] = spin
+            crop.addWidget(spin, i // 2, (i % 2) * 2 + 1)
+            spin.valueChanged.connect(self.update_crop_size)
+        precise.addLayout(crop)
+        note = QLabel("以整条拼接长图左上角为 (0, 0)，向右为 X、向下为 Y。\n数值是边界位置，不是裁掉多少；右、下边界不包含在保留区域内。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #526577;")
+        precise.addWidget(note)
+        apply_row = QHBoxLayout()
+        self.crop_size = QLabel("保留尺寸：—")
+        apply_row.addWidget(self.crop_size)
+        apply_row.addStretch()
+        self.apply_button = self._button("应用边界调整", self.apply_crop, apply_row)
+        precise.addLayout(apply_row)
+        pane_layout.addWidget(self.precise_panel)
+        self.precise_panel.hide()
+        self.precise_toggle.toggled.connect(self.precise_panel.setVisible)
+        self.precise_toggle.toggled.connect(lambda checked: self.precise_toggle.setText(
+            ("−" if checked else "+") + " 精确调整 · 像素坐标"))
+        self.precise_toggle.toggled.connect(lambda: QTimer.singleShot(0, self.fit_preview))
+        more = QHBoxLayout()
+        more.addWidget(QLabel("其他操作"))
+        self.calibrate_button = self._button("可视化标定", self.calibrate, more)
+        self.redetect_button = self._button("重新识别分页", self.redetect, more)
+        more.addStretch()
+        self.delete_button = self._button("删除此页", self.delete_page, more)
+        self.delete_button.setStyleSheet("color: #a23b3b;")
+        pane_layout.addLayout(more)
         split.addWidget(pane)
         split.setStretchFactor(1, 1)
         layout.addWidget(split, 1)
@@ -205,7 +240,15 @@ class MainWindow(QMainWindow):
         footer.addStretch()
         self.export_button = self._button("导出多页 PDF", self.export_pdf, footer)
         layout.addLayout(footer)
-        self.setStyleSheet("QPushButton { padding: 7px 12px; } QListWidget { background: #f5f8fa; } QSpinBox { padding: 3px; }")
+        self.setStyleSheet("QPushButton { padding: 7px 10px; border: 1px solid #ccd7df; border-radius: 5px; background: #ffffff; } QPushButton:hover { background: #edf5fa; border-color: #739db4; } QPushButton:disabled { color: #929da5; background: #f5f7f9; } QListWidget { background: #f5f8fa; border: 1px solid #d7e0e7; border-radius: 6px; } QSpinBox { padding: 4px; } QWidget#precisePanel { background: #eef3f7; border-radius: 6px; }")
+
+    def update_crop_size(self):
+        if not hasattr(self, "crop_size"):
+            return
+        v = {key: spin.value() for key, spin in self.bounds.items()}
+        width, height = v["right"]-v["left"], v["bottom"]-v["top"]
+        self.crop_size.setText(f"待应用尺寸：{width} × {height} px" if width > 0 and height > 0
+                              else "边界无效：右须大于左，下须大于上")
 
     def _build_tray(self):
         icon = QPixmap(32, 32)
@@ -560,6 +603,8 @@ class MainWindow(QMainWindow):
         if self.review is None or index < 0 or index >= len(self.review.pages) or self.job:
             return
         page = self.review.pages[index]
+        self.page_heading.setText(f"第 {index+1} / {len(self.review.pages)} 页 · {page.right-page.left} × {page.bottom-page.top} px · "
+                                  + ("检测为完整页面" if page.complete else "需要检查"))
         for key, spin in self.bounds.items():
             spin.setMaximum(self.review.width if key in ("left", "right") else self.review.height)
             spin.setValue(getattr(page, key))
