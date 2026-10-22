@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QTimer, QSize, QEvent, QPoint
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
-    QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow,
+    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
     QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox,
 )
@@ -23,6 +23,7 @@ from vdc.stitching.store import SegmentStore
 from .images import pixmap
 from .jobs import Job
 from .selection import RegionSelector
+from .editor import VisualEditor, editor_context
 
 
 REASONS = {
@@ -88,6 +89,7 @@ class MainWindow(QMainWindow):
         self.selecting = False
         self.metadata = {}
         self.auto_settings = AutoSettings()
+        self.undo_stack = []
         self._build_ui()
         self._build_tray()
         screen = QApplication.primaryScreen()
@@ -172,6 +174,8 @@ class MainWindow(QMainWindow):
         self._button("适应窗口", self.fit_preview, zoom)
         self._button("放大", lambda: self.view.scale(1.25, 1.25), zoom)
         self._button("缩小", lambda: self.view.scale(0.8, 0.8), zoom)
+        self.visual_crop_button = self._button("拖拽裁切", lambda: self.visual_edit("crop"), zoom)
+        self.undo_button = self._button("撤销已应用修改", self.undo_edit, zoom)
         zoom.addStretch()
         pane_layout.addLayout(zoom)
         crop = QHBoxLayout()
@@ -186,11 +190,11 @@ class MainWindow(QMainWindow):
         pane_layout.addLayout(crop)
         pane_layout.addWidget(QLabel("边界单位为重建内容的像素坐标；右、下边界不包含在页面内。"))
         edit = QHBoxLayout()
-        self.split_button = self._button("拆分此页", self.split_page, edit)
+        self.split_button = self._button("拖动分页线", self.split_page, edit)
         self.merge_button = self._button("与下一页合并", self.merge_page, edit)
         self.delete_button = self._button("删除此页", self.delete_page, edit)
         self.redetect_button = self._button("重新识别分页", self.redetect, edit)
-        self.calibrate_button = self._button("以此页标定", self.calibrate, edit)
+        self.calibrate_button = self._button("可视化标定", self.calibrate, edit)
         edit.addStretch()
         pane_layout.addLayout(edit)
         split.addWidget(pane)
@@ -242,10 +246,11 @@ class MainWindow(QMainWindow):
         self.pages.setEnabled(not busy and not running)
         has_pages = self.review is not None and bool(self.review.pages)
         selected = has_pages and self.pages.currentRow() >= 0
-        for button in [self.apply_button, self.split_button, self.merge_button, self.delete_button, self.calibrate_button]:
+        for button in [self.apply_button, self.split_button, self.merge_button, self.delete_button, self.calibrate_button, self.visual_crop_button]:
             button.setEnabled(not busy and not running and selected)
         self.redetect_button.setEnabled(not busy and not running and self.store is not None)
         self.export_button.setEnabled(not busy and not running and has_pages)
+        self.undo_button.setEnabled(not busy and not running and bool(self.undo_stack))
         for spin in self.bounds.values():
             spin.setEnabled(not busy and not running and selected)
 
@@ -343,6 +348,7 @@ class MainWindow(QMainWindow):
             self.error(exc)
             return
         self.directory, self.region, self.metadata = directory, region, metadata
+        self.undo_stack.clear()
         self.store = self.review = None
         self.pages.clear()
         self.scene.clear()
@@ -378,6 +384,7 @@ class MainWindow(QMainWindow):
             if review_path.exists():
                 review_path.replace(self.directory / "review.previous.json")
             self.store = self.review = None
+            self.undo_stack.clear()
             self.pages.clear()
             self.scene.clear()
             worker_class = AutomaticCaptureWorker if self.automatic.isChecked() else CaptureWorker
@@ -467,10 +474,12 @@ class MainWindow(QMainWindow):
                 return
             self.load_directory(Path(directory))
 
-    def load_directory(self, directory, force=False):
+    def load_directory(self, directory, force=False, selected=0):
         directory = Path(directory)
 
         def loaded(result):
+            if self.directory != directory or force:
+                self.undo_stack.clear()
             self.directory = directory
             self.metadata = read_capture(directory)
             self.auto_settings = AutoSettings(**self.metadata.get("auto_settings", {}))
@@ -480,7 +489,7 @@ class MainWindow(QMainWindow):
             self.region = Region(**self.metadata["region"]) if self.metadata.get("region") else None
             self.store, self.review, thumbs = result
             self.update_labels()
-            self.present_review(thumbs)
+            self.present_review(thumbs, selected)
         self.run_job(lambda: load_review(directory, force), loaded, "正在读取会话并识别分页…")
 
     def present_review(self, thumbs, selected=0):
@@ -548,8 +557,10 @@ class MainWindow(QMainWindow):
             updated = Review(self.review.pages, self.review.warnings, self.review.width, self.review.height, self.review.geometry)
             operation(updated, index)
             updated.save(self.directory)
+            self.undo_stack.append(self.review)
+            self.undo_stack = self.undo_stack[-20:]
             self.review = updated
-            self.load_directory(self.directory)
+            self.load_directory(self.directory, selected=index)
         except Exception as exc:
             self.error(exc)
 
@@ -558,15 +569,56 @@ class MainWindow(QMainWindow):
         self.edit(lambda review, index: review.update(index, **values))
 
     def split_page(self):
+        self.visual_edit("split")
+
+    def undo_edit(self):
+        if self.job or self.worker or not self.undo_stack:
+            return
+        try:
+            restored = self.undo_stack[-1]
+            restored.save(self.directory)
+            self.undo_stack.pop()
+            self.review = restored
+            self.load_directory(self.directory)
+        except Exception as exc:
+            self.error(exc)
+
+    def visual_edit(self, mode):
         index = self.pages.currentRow()
-        if index < 0 or not self.review:
+        if self.job or self.worker or not self.review or index < 0:
             return
-        page = self.review.pages[index]
-        if page.bottom - page.top < 2:
+        values = {key: spin.value() for key, spin in self.bounds.items()}
+        page = PageBoundary(0, **values, confidence=.5, complete=False, source="manual")
+        if mode == "split":
+            page = self.review.pages[index]
+        try:
+            self.review.validate(page)
+            if mode == "split" and page.bottom-page.top < 2:
+                raise ValueError("当前页面高度不足以拆分")
+        except ValueError as exc:
+            self.error(exc)
             return
-        value, ok = QInputDialog.getInt(self, "拆分页面", "拆分处的全局纵向像素坐标：", (page.top + page.bottom) // 2, page.top + 1, page.bottom - 1)
-        if ok:
-            self.edit(lambda review, index: review.split(index, value))
+        default_gap = (self.review.geometry or {}).get("gap", 20)
+        if index+1 < len(self.review.pages):
+            observed_gap = self.review.pages[index+1].top-page.bottom
+            if 0 <= observed_gap <= (page.bottom-page.top)//4:
+                default_gap = observed_gap
+        def shown(result):
+            top, pixels = result
+            dialog = VisualEditor(pixels, top, page, mode, default_gap, self, store=self.store)
+            try:
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    return
+                if mode == "crop":
+                    self.edit(lambda review, i: review.update(i, **dialog.view.values))
+                elif mode == "split":
+                    self.edit(lambda review, i: review.split(i, dialog.view.split_y))
+                else:
+                    anchor = PageBoundary(0, **dialog.view.values, confidence=.5, complete=False, source="manual")
+                    self.apply_calibration(anchor, dialog.gap)
+            finally:
+                dialog.deleteLater()
+        self.run_job(lambda: editor_context(self.store, page), shown, "正在加载原始页面与相邻区域…")
 
     def merge_page(self):
         self.edit(lambda review, index: review.merge(index))
@@ -580,20 +632,15 @@ class MainWindow(QMainWindow):
             self.load_directory(self.directory, force=True)
 
     def calibrate(self):
+        self.visual_edit("calibrate")
+
+    def apply_calibration(self, anchor, gap):
         if not self.review or self.job or self.worker or self.pages.currentRow() < 0:
             return
-        # Read the coordinate controls directly so a provisional segment can be
-        # expanded to one complete page before calibration.
-        values = {key: spin.value() for key, spin in self.bounds.items()}
-        anchor = PageBoundary(0, **values, confidence=.5, complete=False, source="manual")
         try:
             self.review.validate(anchor)
         except ValueError as exc:
             self.error(exc)
-            return
-        gap, ok = QInputDialog.getInt(self, "一页标定", "请先将四边坐标调整为一张完整页面。\n输入相邻页面间距（像素，不是页高）：",
-                                      (self.review.geometry or {}).get("gap", 20), 0, max(0, (anchor.bottom-anchor.top)//4))
-        if not ok:
             return
         if QMessageBox.question(self, "应用同尺寸标定", "将按当前完整页和间距重建分页列表。未获视觉验证的页边仍会标为待确认。是否替换当前分页编辑？") != QMessageBox.StandardButton.Yes:
             return
@@ -603,6 +650,8 @@ class MainWindow(QMainWindow):
             review.save(self.directory)
             return load_review(self.directory)
         def shown(result):
+            self.undo_stack.append(self.review)
+            self.undo_stack = self.undo_stack[-20:]
             self.store, self.review, thumbs = result
             self.present_review(thumbs)
         self.run_job(work, shown, "正在验证标定页与其他页面的尺寸…")
