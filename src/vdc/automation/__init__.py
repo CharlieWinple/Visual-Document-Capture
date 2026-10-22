@@ -1,4 +1,4 @@
-"""Extension contracts; no automatic input is performed in Phase 0."""
+"""Capture contracts and foreground visual-feedback automation."""
 from typing import Protocol
 import numpy as np
 
@@ -8,4 +8,6 @@ class CaptureSource(Protocol):
 
 
 class ScrollController(Protocol):
-    def scroll(self, pixels: int) -> None: ...
+    def scroll(self, units: int) -> None:
+        """Positive wheel units scroll down; displacement must be measured visually."""
+        ...

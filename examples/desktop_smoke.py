@@ -19,6 +19,7 @@ from vdc.app.fixtures import make_fixture
 from vdc.app.session import new_capture
 from vdc.capture.region import logical_to_physical
 from vdc.capture.worker import CaptureWorker
+from vdc.capture.automatic import AutomaticCaptureWorker
 from vdc.export.pdf import export_session
 from vdc.gui.images import pixmap
 from vdc.gui.selection import SelectionOverlay
@@ -36,6 +37,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--screen", type=int, default=0)
     parser.add_argument("--pages", type=int, default=6)
+    parser.add_argument("--automatic", action="store_true", help="Test native wheel input and automatic completion")
     parser.add_argument("--continuous-speed", type=float, default=0,
                         help="Logical pixels/second; move without waiting for capture between frames")
     parser.add_argument("--output", type=Path, required=True)
@@ -47,6 +49,24 @@ def main():
     with mss.mss() as source:
         monitor = next(m for m in source.monitors[1:] if m["left"] == geo.x() and m["top"] == geo.y())
     fixture = make_fixture(page_count=args.pages)
+    if args.automatic:
+        # Render a known-page-count local PDF before screen capture. Only this
+        # test reader uses PDF internals; production capture sees screen pixels.
+        import io
+        import pymupdf
+        from PIL import Image
+        import numpy as np
+        with pymupdf.open() as pdf:
+            for pixels in fixture.pages:
+                stream = io.BytesIO()
+                Image.fromarray(pixels).save(stream, format="PNG")
+                page = pdf.new_page(width=pixels.shape[1], height=pixels.shape[0])
+                page.insert_image(page.rect, stream=stream.getvalue())
+            pdf.save(args.output / "source.pdf")
+        with pymupdf.open(args.output / "source.pdf") as pdf:
+            for page, (left, top, right, bottom) in zip(pdf, fixture.bounds):
+                raster = page.get_pixmap(alpha=False)
+                fixture.canvas[top:bottom, left:right] = np.frombuffer(raster.samples, dtype=np.uint8).reshape(raster.height, raster.width, 3)
     viewer = QMainWindow()
     viewer.setWindowFlags(viewer.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
     viewer.setWindowTitle("VDC desktop test · synthetic content only")
@@ -83,7 +103,27 @@ def main():
     directory = args.output / "session"
     directory.mkdir()
     new_capture(directory, expected)
-    worker = CaptureWorker(directory, expected, delay=.2)
+    viewer.raise_()
+    viewer.activateWindow()
+    pump(app, .4)
+    if args.automatic:
+        # Activate ONLY our owned synthetic reader with a native click. Qt's
+        # activation request alone can be denied by Windows foreground policy.
+        import ctypes
+        from ctypes import wintypes
+        api = ctypes.WinDLL("user32")
+        api.WindowFromPoint.argtypes = [wintypes.POINT]
+        api.WindowFromPoint.restype = wintypes.HWND
+        api.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        api.GetAncestor.restype = wintypes.HWND
+        point = wintypes.POINT(expected.left+expected.width//2, expected.top+expected.height//2)
+        if api.GetAncestor(api.WindowFromPoint(point), 2) != int(viewer.winId()):
+            raise AssertionError("Synthetic reader is obstructed; refusing test input")
+        api.SetCursorPos(point.x, point.y)
+        api.mouse_event(2, 0, 0, 0, 0)
+        api.mouse_event(4, 0, 0, 0, 0)
+        pump(app, .3)
+    worker = (AutomaticCaptureWorker if args.automatic else CaptureWorker)(directory, expected, delay=.2)
     events, problems = [], []
     worker.progress.connect(lambda event: events.append(event))
     worker.problem.connect(problems.append)
@@ -93,6 +133,18 @@ def main():
         positions.append(area.verticalScrollBar().maximum())
     started = time.monotonic()
     try:
+        if args.automatic:
+            deadline = time.monotonic()+180
+            while worker.isRunning():
+                pump(app, .03)
+                if problems or time.monotonic() > deadline:
+                    raise AssertionError(f"Automatic capture failed: {problems}; {events[-1:]}")
+            if not events or events[-1].get("completion_reason") != "visible_bottom_and_no_motion":
+                raise AssertionError(f"No automatic completion: {events[-1:]}")
+            expected_y = round(area.verticalScrollBar().maximum()*screen.devicePixelRatio())
+            if abs(events[-1].get("position", -99999)-expected_y) > 3:
+                raise AssertionError(f"Automatic final position mismatch: {events[-1:]}")
+            positions = []
         if args.continuous_speed > 0:
             deadline = time.monotonic() + 8
             while not events or events[-1].get("height", 0) == 0:
@@ -133,6 +185,8 @@ def main():
               "source_pages": args.pages, "detected_pages": len(review.pages), "warnings": review.warnings,
               "frames": len(positions), "seconds": round(time.monotonic() - started, 3),
               "continuous_speed": args.continuous_speed,
+              "automatic": args.automatic,
+              "scroll_commands": events[-1].get("scroll_commands", 0) if events else 0,
               "accepted_frames": events[-1].get("accepted_frames", 0) if events else 0,
               "problems": problems, "pages": [p.__dict__ for p in review.pages]}
     if len(review.pages) == len(fixture.bounds):

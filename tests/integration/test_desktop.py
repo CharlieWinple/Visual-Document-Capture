@@ -13,6 +13,8 @@ from vdc.app.fixtures import make_fixture
 from vdc.app.session import new_capture, read_capture
 from vdc.capture.region import Region
 from vdc.capture.worker import CaptureWorker
+from vdc.capture.automatic import AutomaticCaptureWorker
+from vdc.automation.windows import InputInterrupted
 from vdc.gui.selection import SelectionOverlay
 from vdc.gui.window import MainWindow
 from vdc.stitching.store import SegmentStore
@@ -188,3 +190,103 @@ def test_close_waits_for_background_job(app, tmp_path):
     window.close()
     assert window.closing
     wait_for(app, lambda: window.job is None and not window.isVisible())
+
+
+def test_automatic_worker_focus_pause_resume_and_stop(app, tmp_path):
+    fixture = make_fixture(page_count=3)
+    position, focus, calls = [0], [True], []
+    class Source:
+        def __init__(self, region): pass
+        def grab(self): return fixture.canvas[position[0]:position[0]+360].copy()
+        def close(self): pass
+    class Driver:
+        def __init__(self, region): pass
+        def check(self):
+            if not focus[0]:
+                raise InputInterrupted("test focus changed")
+        def rearm(self): self.check()
+        def scroll(self, units):
+            self.check()
+            calls.append(units)
+            position[0] = max(0, min(len(fixture.canvas)-360, position[0]+units))
+    region = Region(0, 0, 640, 360)
+    new_capture(tmp_path, region)
+    worker = AutomaticCaptureWorker(tmp_path, region, Source, delay=0, driver_factory=Driver)
+    problems = []
+    worker.problem.connect(problems.append)
+    worker.start()
+    try:
+        wait_for(app, lambda: len(calls) >= 2)
+        focus[0] = False
+        wait_for(app, lambda: bool(problems))
+        assert worker.pause_event.is_set()
+        count = len(calls)
+        # A paused worker must issue no more input or advance the store.
+        time.sleep(.2)
+        assert len(calls) == count
+        position[0] = SegmentStore(tmp_path).state["position"]
+        focus[0] = True
+        worker.resume()
+        wait_for(app, lambda: len(calls) > count)
+    finally:
+        worker.stop()
+        assert worker.wait(5000)
+    count = len(calls)
+    time.sleep(.1)
+    assert len(calls) == count
+    metadata = read_capture(tmp_path)
+    assert metadata["state"] == "reviewing"
+    assert metadata["mode"] == "automatic"
+    assert metadata["auto_settings"]["step_percent"] == 30
+
+
+def test_automatic_mode_controls(app, tmp_path):
+    window = MainWindow(tmp_path)
+    try:
+        assert not window.automatic.isChecked()
+        assert not window.auto_settings_button.isEnabled()
+        window.automatic.setChecked(True)
+        assert window.auto_settings_button.isEnabled()
+        assert window.start_button.text() == "开始自动采集"
+    finally:
+        window.close()
+
+
+def test_automatic_window_finishes_into_preview(app, tmp_path, monkeypatch):
+    import vdc.gui.window as window_module
+    from vdc.automation.engine import AutoSettings
+    fixture = make_fixture(page_count=1)
+    position = [0]
+    class Source:
+        def __init__(self, region): pass
+        def grab(self): return fixture.canvas[position[0]:position[0]+360].copy()
+        def close(self): pass
+    class Driver:
+        def __init__(self, region): pass
+        def check(self): pass
+        def rearm(self): pass
+        def scroll(self, units):
+            position[0] = max(0, min(len(fixture.canvas)-360, position[0]+units))
+    def factory(*args, **kwargs):
+        kwargs.update(delay=0, blocked_window=None, source_factory=Source, driver_factory=Driver)
+        return AutomaticCaptureWorker(*args, **kwargs)
+    monkeypatch.setattr(window_module, "AutomaticCaptureWorker", factory)
+    window = MainWindow(tmp_path)
+    problems = []
+    monkeypatch.setattr(window, "error", problems.append)
+    try:
+        window.region_selected(Region(0, 0, 640, 360))
+        window.auto_settings = AutoSettings(end_wait_ms=4000)
+        window.automatic.setChecked(True)
+        window.start_capture()
+        wait_for(app, lambda: window.worker is None and window.job is None and window.review is not None, timeout=25)
+        assert not problems
+        assert len(window.review.pages) == 1
+        assert window.metadata["completion_reason"] == "visible_bottom_and_no_motion"
+        assert window.export_button.isEnabled()
+        assert len(window.scene.items()) == 1
+    finally:
+        if window.worker:
+            window.worker.stop()
+            wait_for(app, lambda: window.worker is None)
+        window.close()

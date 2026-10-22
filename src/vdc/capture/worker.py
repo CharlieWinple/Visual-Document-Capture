@@ -71,7 +71,7 @@ class CaptureWorker(QThread):
             metadata = read_capture(self.directory)
             store = SegmentStore(self.directory)
             tracker = ContinuousTracker(store)
-            persist("starting")
+            persist("starting", mode="manual", completion_reason="")
             if self.stop_event.wait(self.delay):
                 persist("cancelled" if self.cancelled else "reviewing")
                 return

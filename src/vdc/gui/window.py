@@ -10,11 +10,13 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
-    QSystemTrayIcon, QVBoxLayout, QWidget,
+    QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox,
 )
 from vdc.app.session import Review, new_capture, read_capture
 from vdc.capture.region import Region
 from vdc.capture.worker import CaptureWorker
+from vdc.capture.automatic import AutomaticCaptureWorker
+from vdc.automation.engine import AutoSettings
 from vdc.export.pdf import export_session
 from vdc.pagination.detector import PageBoundary, detect_page_boundaries, calibrate_page_boundaries
 from vdc.stitching.store import SegmentStore
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
         self.closing = False
         self.selecting = False
         self.metadata = {}
+        self.auto_settings = AutoSettings()
         self._build_ui()
         self._build_tray()
         screen = QApplication.primaryScreen()
@@ -109,7 +112,7 @@ class MainWindow(QMainWindow):
         heading = QLabel("Visual Document Capture")
         heading.setStyleSheet("font-size: 24px; font-weight: 600; color: #174c66;")
         layout.addWidget(heading)
-        layout.addWidget(QLabel("框选阅读区  →  手动滚动采集  →  检查分页  →  导出 PDF"))
+        layout.addWidget(QLabel("框选阅读区  →  手动 / 自动滚动采集  →  检查分页  →  导出 PDF"))
         top = QHBoxLayout()
         self.new_button = self._button("新建 · 框选区域", self.select_region, top)
         self.open_button = self._button("打开已有会话", self.open_session, top)
@@ -123,6 +126,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.region_label)
         layout.addWidget(self.path_label)
         controls = QHBoxLayout()
+        self.automatic = QCheckBox("自动滚动")
+        self.automatic.setToolTip("程序控制前台阅读器滚动；Esc、移出鼠标或切换窗口暂停。请保持阅读器原位置和缩放。")
+        controls.addWidget(self.automatic)
+        self.auto_settings_button = self._button("自动设置", self.configure_automatic, controls)
+        self.automatic.toggled.connect(self.update_controls)
+        self.automatic.toggled.connect(lambda checked: self.warning.setText(
+            "自动模式：开始后有 2.5 秒准备时间，请让阅读器处于前台。鼠标会移入选区；Esc、移出鼠标或切换窗口可暂停。"
+            if checked else "支持缓慢连续滚动；主窗口恢复时自动暂停。位置待确认时请减速。"))
         self.start_button = self._button("开始采集", self.start_capture, controls)
         self.pause_button = self._button("暂停", self.pause_capture, controls)
         self.finish_button = self._button("结束并预览", self.finish_capture, controls)
@@ -217,10 +228,13 @@ class MainWindow(QMainWindow):
     def update_controls(self):
         busy = self.job is not None or self.selecting
         running = self.worker is not None
+        self.automatic.setEnabled(not busy and not running)
+        self.auto_settings_button.setEnabled(not busy and not running and self.automatic.isChecked())
         paused = running and self.worker.pause_event.is_set()
         for button in [self.new_button, self.open_button, self.demo_button]:
             button.setEnabled(not busy and not running)
-        self.start_button.setText("继续采集" if running or self.store is not None else "开始采集")
+        self.start_button.setText("继续采集" if running or self.store is not None else
+                                 "开始自动采集" if self.automatic.isChecked() else "开始采集")
         self.start_button.setEnabled(not busy and self.region is not None and (not running or paused))
         self.pause_button.setEnabled(running and not paused)
         self.finish_button.setEnabled(running)
@@ -237,6 +251,33 @@ class MainWindow(QMainWindow):
 
     def error(self, message):
         QMessageBox.warning(self, "需要处理", str(message))
+
+    def configure_automatic(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("自动滚动设置")
+        form = QFormLayout(dialog)
+        controls = {}
+        for key, label, low, high, suffix in [
+            ("step_percent", "目标步长（视口高度）", 15, 45, "%"),
+            ("settle_ms", "每步最短等待（越大越慢）", 300, 2000, " ms"),
+            ("sample_ms", "截图观察间隔", 50, 500, " ms"),
+            ("end_wait_ms", "疑似末尾持续确认时间", 4000, 30000, " ms"),
+        ]:
+            spin = QSpinBox()
+            spin.setRange(low, high)
+            spin.setSuffix(suffix)
+            spin.setValue(getattr(self.auto_settings, key))
+            form.addRow(label, spin)
+            controls[key] = spin
+        note = QLabel("步长由实际画面位移反馈调整。阅读器加载较慢时，请增加末尾确认时间。")
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.auto_settings = AutoSettings(**{key: spin.value() for key, spin in controls.items()})
 
     def run_job(self, function, success, message):
         if self.job is not None:
@@ -339,8 +380,11 @@ class MainWindow(QMainWindow):
             self.store = self.review = None
             self.pages.clear()
             self.scene.clear()
-            self.worker = CaptureWorker(self.directory, self.region, parent=self,
-                                        blocked_window=int(self.winId()))
+            worker_class = AutomaticCaptureWorker if self.automatic.isChecked() else CaptureWorker
+            self.worker = worker_class(self.directory, self.region, parent=self,
+                                      delay=2.5 if self.automatic.isChecked() else 1.2,
+                                      blocked_window=int(self.winId()),
+                                      **({"settings": self.auto_settings} if self.automatic.isChecked() else {}))
             self.worker.progress.connect(self.capture_progress)
             self.worker.problem.connect(self.capture_problem)
             self.worker.finished.connect(self.capture_finished)
@@ -376,6 +420,8 @@ class MainWindow(QMainWindow):
     def capture_progress(self, data):
         self.metadata = data
         states = {"starting": "准备采集", "capturing": "采集中", "paused": "已暂停", "pending": "位置暂待确认",
+                  "auto_waiting": "自动采集 · 等待并验证", "auto_rollback": "自动采集 · 回滚验证",
+                  "auto_finished": "已到可见页底",
                   "needs_recovery": "需要回滚恢复", "reviewing": "准备预览", "cancelled": "已停止", "error": "采集异常"}
         label = states.get(data.get("state"), "就绪")
         self.status.setText(f"{label} · 有效帧 {data.get('accepted_frames', 0)} · 已保存高度 {data.get('height', 0)} px · "
@@ -427,7 +473,9 @@ class MainWindow(QMainWindow):
         def loaded(result):
             self.directory = directory
             self.metadata = read_capture(directory)
-            if self.metadata.get("state") in ("capturing", "starting", "paused", "pending"):
+            self.auto_settings = AutoSettings(**self.metadata.get("auto_settings", {}))
+            self.automatic.setChecked(self.metadata.get("mode") == "automatic")
+            if self.metadata.get("state") in ("capturing", "starting", "paused", "pending", "auto_waiting", "auto_rollback"):
                 self.metadata["needs_recovery"] = True
             self.region = Region(**self.metadata["region"]) if self.metadata.get("region") else None
             self.store, self.review, thumbs = result
@@ -457,6 +505,8 @@ class MainWindow(QMainWindow):
         self.pages.blockSignals(False)
         warnings = self.review.export_warnings(self.metadata)
         self.warning.setText("；".join(map(warning_text, warnings)) if warnings else "分页已识别。建议逐页检查页眉、页脚和边界后再导出。")
+        if self.metadata.get("completion_reason") == "visible_bottom_and_no_motion":
+            self.warning.setText("自动滚动已结束：多次无位移且可见页底。请核对最后一页，慢加载内容可能需要继续采集。\n" + self.warning.text())
         if self.review.geometry:
             g = self.review.geometry
             method = "自动学习" if g["source"] == "learned" else "人工标定"
@@ -587,7 +637,7 @@ class MainWindow(QMainWindow):
             return
         fixture = make_fixture()
         self.demo = QMainWindow()
-        self.demo.setWindowTitle("VDC 演示阅读器 · 6 页合成文档 · 请手动滚动")
+        self.demo.setWindowTitle("VDC 演示阅读器 · 6 页合成文档")
         area = QScrollArea()
         label = QLabel()
         label.setPixmap(pixmap(fixture.canvas))
