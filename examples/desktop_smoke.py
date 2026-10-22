@@ -13,13 +13,14 @@ from vdc.app.main import enable_dpi_awareness
 enable_dpi_awareness()
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QScrollArea
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QScrollArea, QPlainTextEdit
 import mss
 from vdc.app.fixtures import make_fixture
 from vdc.app.session import new_capture
 from vdc.capture.region import logical_to_physical
 from vdc.capture.worker import CaptureWorker
 from vdc.capture.automatic import AutomaticCaptureWorker
+from vdc.automation.engine import AutoSettings
 from vdc.export.pdf import export_session
 from vdc.gui.images import pixmap
 from vdc.gui.selection import SelectionOverlay
@@ -38,10 +39,13 @@ def main():
     parser.add_argument("--screen", type=int, default=0)
     parser.add_argument("--pages", type=int, default=6)
     parser.add_argument("--automatic", action="store_true", help="Test native wheel input and automatic completion")
+    parser.add_argument("--background", action="store_true", help="Keep focus and mouse in a separate primary-screen editor")
     parser.add_argument("--continuous-speed", type=float, default=0,
                         help="Logical pixels/second; move without waiting for capture between frames")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.background:
+        args.automatic = True
     args.output.mkdir(parents=True, exist_ok=False)
     app = QApplication([])
     screen = app.screens()[args.screen]
@@ -49,6 +53,9 @@ def main():
     with mss.mss() as source:
         monitor = next(m for m in source.monitors[1:] if m["left"] == geo.x() and m["top"] == geo.y())
     fixture = make_fixture(page_count=args.pages)
+    work_window = work_editor = None
+    focus_checks = typed_batches = work_scroll_changes = 0
+    last_work_scroll = 0
     if args.automatic:
         # Render a known-page-count local PDF before screen capture. Only this
         # test reader uses PDF internals; production capture sees screen pixels.
@@ -81,7 +88,9 @@ def main():
     viewer.show()
     pump(app, .8)
     origin = area.viewport().mapToGlobal(QPoint(0, 0)) - geo.topLeft()
-    h = area.viewport().height()
+    # Keep the fixed viewport border outside the capture area, including when
+    # a fractional physical origin puts a one-pixel border inside Qt's bounds.
+    h = area.viewport().height()-2
     if area.viewport().width() < 640:
         raise RuntimeError("Test viewport is too narrow")
     expected = logical_to_physical((origin.x(), origin.y(), 640, h), (geo.width(), geo.height()), monitor,
@@ -116,14 +125,40 @@ def main():
         api.WindowFromPoint.restype = wintypes.HWND
         api.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
         api.GetAncestor.restype = wintypes.HWND
+        api.GetForegroundWindow.restype = wintypes.HWND
+        api.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
         point = wintypes.POINT(expected.left+expected.width//2, expected.top+expected.height//2)
-        if api.GetAncestor(api.WindowFromPoint(point), 2) != int(viewer.winId()):
+        input_window = viewer
+        if args.background:
+            primary = app.primaryScreen()
+            if primary == screen:
+                raise AssertionError("Background concurrency test requires the reader on another display")
+            work_window = QMainWindow()
+            work_window.setWindowFlags(work_window.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+            work_window.setWindowTitle("VDC test work editor · owned test window only")
+            work_editor = QPlainTextEdit()
+            work_editor.setPlainText("Primary-screen work area\n"*100)
+            work_window.setCentralWidget(work_editor)
+            work_window.winId()
+            work_window.windowHandle().setScreen(primary)
+            work_window.setGeometry(primary.geometry().x()+100, primary.geometry().y()+100, 600, 450)
+            work_window.show()
+            work_window.raise_()
+            work_window.activateWindow()
+            pump(app, .4)
+            api.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+            point = wintypes.POINT(150, 150)
+            if not api.ClientToScreen(int(work_window.winId()), ctypes.byref(point)):
+                raise AssertionError("Cannot map owned work window coordinates")
+            input_window = work_window
+        if api.GetAncestor(api.WindowFromPoint(point), 2) != int(input_window.winId()):
             raise AssertionError("Synthetic reader is obstructed; refusing test input")
         api.SetCursorPos(point.x, point.y)
         api.mouse_event(2, 0, 0, 0, 0)
         api.mouse_event(4, 0, 0, 0, 0)
         pump(app, .3)
-    worker = (AutomaticCaptureWorker if args.automatic else CaptureWorker)(directory, expected, delay=.2)
+    worker = (AutomaticCaptureWorker if args.automatic else CaptureWorker)(directory, expected, delay=.2,
+        **({"settings": AutoSettings(input_mode="visible_background" if args.background else "foreground")} if args.automatic else {}))
     events, problems = [], []
     worker.progress.connect(lambda event: events.append(event))
     worker.problem.connect(problems.append)
@@ -137,6 +172,23 @@ def main():
             deadline = time.monotonic()+180
             while worker.isRunning():
                 pump(app, .03)
+                if args.background:
+                    current = wintypes.POINT()
+                    api.GetCursorPos(ctypes.byref(current))
+                    if api.GetForegroundWindow() != int(work_window.winId()) or (current.x, current.y) != (point.x, point.y):
+                        raise AssertionError("Background capture changed focus or cursor (or test was interrupted)")
+                    focus_checks += 1
+                    current_scroll = work_editor.verticalScrollBar().value()
+                    work_scroll_changes += int(current_scroll != last_work_scroll)
+                    last_work_scroll = current_scroll
+                    if focus_checks % 15 == 0:
+                        QTest.keyClicks(work_editor, "working ")
+                        if api.GetAncestor(api.WindowFromPoint(point), 2) != int(work_window.winId()):
+                            raise AssertionError("Owned work editor obstructed; refusing test input")
+                        api.mouse_event(2, 0, 0, 0, 0)
+                        api.mouse_event(4, 0, 0, 0, 0)
+                        api.mouse_event(0x0800, 0, 0, ctypes.c_uint32(-120).value, 0)
+                        typed_batches += 1
                 if problems or time.monotonic() > deadline:
                     raise AssertionError(f"Automatic capture failed: {problems}; {events[-1:]}")
             if not events or events[-1].get("completion_reason") != "visible_bottom_and_no_motion":
@@ -145,6 +197,8 @@ def main():
             if abs(events[-1].get("position", -99999)-expected_y) > 3:
                 raise AssertionError(f"Automatic final position mismatch: {events[-1:]}")
             positions = []
+            if args.background and (typed_batches == 0 or work_scroll_changes == 0):
+                raise AssertionError("Primary-screen work activity was not exercised")
         if args.continuous_speed > 0:
             deadline = time.monotonic() + 8
             while not events or events[-1].get("height", 0) == 0:
@@ -180,12 +234,16 @@ def main():
         worker.stop()
         worker.wait(5000)
         viewer.close()
+        if work_window:
+            work_window.close()
     store, review, thumbs = load_review(directory)
     result = {"screen": screen.name(), "dpr": screen.devicePixelRatio(), "region": expected.as_dict(),
               "source_pages": args.pages, "detected_pages": len(review.pages), "warnings": review.warnings,
               "frames": len(positions), "seconds": round(time.monotonic() - started, 3),
               "continuous_speed": args.continuous_speed,
               "automatic": args.automatic,
+              "background": args.background, "focus_cursor_checks": focus_checks, "typing_batches": typed_batches,
+              "work_scroll_changes": work_scroll_changes,
               "scroll_commands": events[-1].get("scroll_commands", 0) if events else 0,
               "accepted_frames": events[-1].get("accepted_frames", 0) if events else 0,
               "problems": problems, "pages": [p.__dict__ for p in review.pages]}

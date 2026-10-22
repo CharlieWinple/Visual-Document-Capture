@@ -7,16 +7,22 @@ from PIL import Image
 from PySide6.QtCore import QLockFile
 from vdc.app.session import read_capture, write_json
 from vdc.automation.engine import AutoEngine, AutoSettings
-from vdc.automation.windows import WindowsWheel, InputInterrupted
+from vdc.automation.windows import WindowsWheel, VisibleWindowWheel, InputInterrupted
 from vdc.stitching.store import SegmentStore
 from .worker import CaptureWorker
 
 
 class AutomaticCaptureWorker(CaptureWorker):
-    def __init__(self, *args, driver_factory=WindowsWheel, settings=None, **kwargs):
+    def __init__(self, *args, driver_factory=None, settings=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.driver_factory = driver_factory
         self.settings = settings or AutoSettings()
+        self.background = self.settings.input_mode == "visible_background"
+        self.driver_factory = driver_factory or (VisibleWindowWheel if self.background else WindowsWheel)
+
+    def own_window_visible(self):
+        # In visible-background mode the main window may remain on another
+        # monitor; the driver independently checks the captured region.
+        return False if self.background else super().own_window_visible()
 
     def run(self):
         lock = QLockFile(str(self.directory / "capture.lock"))
@@ -51,7 +57,9 @@ class AutomaticCaptureWorker(CaptureWorker):
         try:
             metadata = read_capture(self.directory)
             store = SegmentStore(self.directory)
-            persist("starting", notice="自动模式：请保持阅读器前台可见，Esc 或移出鼠标可暂停",
+            notice = ("不占用鼠标模式：请保持阅读器可见，Ctrl+Shift+F8 或托盘可暂停" if self.background else
+                      "自动模式：请保持阅读器前台可见，Esc 或移出鼠标可暂停")
+            persist("starting", notice=notice,
                     completion_reason="", auto_settings=asdict(self.settings))
             if self.stop_event.wait(self.delay):
                 persist("cancelled" if self.cancelled else "reviewing")
@@ -88,7 +96,7 @@ class AutomaticCaptureWorker(CaptureWorker):
                             quality=result.confidence if result else metadata.get("quality", 0),
                             needs_recovery=engine.outstanding or event.state == "needs_recovery",
                             error=event.reason if event.state == "needs_recovery" else "",
-                            notice=event.reason or "自动滚动后正在验证画面；Esc 可暂停",
+                            notice=event.reason or notice,
                             scroll_commands=engine.commands, wheel_units=engine.units)
                     if event.state == "auto_finished":
                         persist("reviewing", needs_recovery=False, completion_reason="visible_bottom_and_no_motion",
@@ -119,6 +127,11 @@ class AutomaticCaptureWorker(CaptureWorker):
                 pass
             self.problem.emit(f"自动采集失败：{exc}")
         finally:
+            if driver is not None and hasattr(driver, "close"):
+                try:
+                    driver.close()
+                except Exception:
+                    pass
             if source is not None:
                 try:
                     source.close()

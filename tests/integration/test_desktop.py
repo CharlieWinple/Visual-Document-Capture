@@ -257,7 +257,8 @@ def test_automatic_mode_controls(app, tmp_path):
         window.close()
 
 
-def test_automatic_window_finishes_into_preview(app, tmp_path, monkeypatch):
+@pytest.mark.parametrize("background", [False, True])
+def test_automatic_window_finishes_into_preview(app, tmp_path, monkeypatch, background):
     import vdc.gui.window as window_module
     from vdc.automation.engine import AutoSettings
     fixture = make_fixture(page_count=1)
@@ -278,20 +279,53 @@ def test_automatic_window_finishes_into_preview(app, tmp_path, monkeypatch):
     monkeypatch.setattr(window_module, "AutomaticCaptureWorker", factory)
     window = MainWindow(tmp_path)
     problems = []
+    restored = []
+    original_restore = window.restore
+    def restore():
+        restored.append(True)
+        original_restore()
+    monkeypatch.setattr(window, "restore", restore)
     monkeypatch.setattr(window, "error", problems.append)
     try:
         window.region_selected(Region(0, 0, 640, 360))
-        window.auto_settings = AutoSettings(end_wait_ms=4000)
+        window.auto_settings = AutoSettings(end_wait_ms=4000,
+            input_mode="visible_background" if background else "foreground")
         window.automatic.setChecked(True)
         window.start_capture()
+        if background:
+            window.showNormal()  # Showing controls on the other monitor must not pause.
         wait_for(app, lambda: window.worker is None and window.job is None and window.review is not None, timeout=25)
         assert not problems
         assert len(window.review.pages) == 1
         assert window.metadata["completion_reason"] == "visible_bottom_and_no_motion"
         assert window.export_button.isEnabled()
         assert len(window.scene.items()) == 1
+        assert bool(restored) is not background
     finally:
         if window.worker:
             window.worker.stop()
             wait_for(app, lambda: window.worker is None)
+        window.close()
+
+
+def test_background_problem_is_passive_and_mode_can_be_selected(app, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QDialog, QComboBox
+    window = MainWindow(tmp_path)
+    notices, restored = [], []
+    monkeypatch.setattr(window.tray, "showMessage", lambda *args: notices.append(args))
+    monkeypatch.setattr(window, "restore", lambda: restored.append(True))
+    def choose(dialog):
+        dialog.findChild(QComboBox).setCurrentIndex(1)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(QDialog, "exec", choose)
+    try:
+        window.automatic.setChecked(True)
+        window.configure_automatic()
+        assert window.auto_settings.input_mode == "visible_background"
+        window.worker = SimpleNamespace(background=True)
+        window.capture_problem("测试暂停")
+        assert notices and not restored
+    finally:
+        window.worker = None
         window.close()

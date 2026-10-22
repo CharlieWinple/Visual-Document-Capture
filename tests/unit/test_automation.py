@@ -119,3 +119,11 @@ def test_retry_limit_prevents_endless_rollback(tmp_path):
     assert event.state == "needs_recovery"
     assert reader.calls == [120, -120, 60, -60, 30]
     assert engine.store.state["height"] == 360
+
+
+def test_background_no_motion_is_not_reported_as_compatible_completion(tmp_path):
+    reader = Reader(make_fixture(page_count=3).canvas[-360:])
+    engine = AutoEngine(SegmentStore(tmp_path), reader, AutoSettings(input_mode="visible_background"))
+    event = run(engine, reader)
+    assert event.state == "needs_recovery"
+    assert "定向滚动" in event.reason

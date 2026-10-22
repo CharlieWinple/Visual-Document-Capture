@@ -12,8 +12,11 @@ class AutoSettings:
     settle_ms: int = 400
     sample_ms: int = 60
     end_wait_ms: int = 6000
+    input_mode: str = "foreground"
 
     def __post_init__(self):
+        if self.input_mode not in ("foreground", "visible_background"):
+            raise ValueError("未知自动滚动方式")
         for key, low, high in (("step_percent", 15, 45), ("settle_ms", 300, 2000),
                                ("sample_ms", 50, 500), ("end_wait_ms", 4000, 30000)):
             if not low <= getattr(self, key) <= high:
@@ -68,6 +71,7 @@ class AutoEngine:
         self.last_units = 0
         self.retries = self.no_motion = 0
         self.stalled_since = None
+        self.motion_verified = False
 
     def command(self, units, now, mode):
         self.driver.scroll(units)
@@ -126,11 +130,14 @@ class AutoEngine:
                 if self.stalled_since is None:
                     self.stalled_since = now
                 if self.no_motion >= 4 and now-self.stalled_since >= self.settings.end_wait_ms/1000:
+                    if self.settings.input_mode == "visible_background" and not self.motion_verified:
+                        return AutoEvent("needs_recovery", "未观察到定向滚动产生位移：阅读器可能不兼容；若文档仅一屏，请手动结束并预览", result)
                     if visible_bottom(frame):
                         return AutoEvent("auto_finished", "多次滚动未前进且可见页底，请检查末页", result)
                     return AutoEvent("needs_recovery", "连续滚动未前进，且无法确认页底；请检查焦点或加载状态", result)
             else:
                 self.no_motion = self.retries = 0
+                self.motion_verified = True
                 self.stalled_since = None
                 # Adapt to actual observed movement, retaining generous overlap.
                 target = len(frame)*self.settings.step_percent/100

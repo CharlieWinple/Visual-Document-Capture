@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
-    QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox,
+    QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QComboBox,
 )
 from vdc.app.session import Review, new_capture, read_capture
 from vdc.capture.region import Region
@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self.metadata = {}
         self.auto_settings = AutoSettings()
         self.undo_stack = []
+        self.quiet_preview = False
         self._build_ui()
         self._build_tray()
         screen = QApplication.primaryScreen()
@@ -129,13 +130,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.path_label)
         controls = QHBoxLayout()
         self.automatic = QCheckBox("自动滚动")
-        self.automatic.setToolTip("程序控制前台阅读器滚动；Esc、移出鼠标或切换窗口暂停。请保持阅读器原位置和缩放。")
+        self.automatic.setToolTip("在自动设置中选择前台滚动或副屏可见、不占用鼠标的滚动方式。")
         controls.addWidget(self.automatic)
         self.auto_settings_button = self._button("自动设置", self.configure_automatic, controls)
         self.automatic.toggled.connect(self.update_controls)
-        self.automatic.toggled.connect(lambda checked: self.warning.setText(
-            "自动模式：开始后有 2.5 秒准备时间，请让阅读器处于前台。鼠标会移入选区；Esc、移出鼠标或切换窗口可暂停。"
-            if checked else "支持缓慢连续滚动；主窗口恢复时自动暂停。位置待确认时请减速。"))
+        self.automatic.toggled.connect(self.show_capture_hint)
         self.start_button = self._button("开始采集", self.start_capture, controls)
         self.pause_button = self._button("暂停", self.pause_capture, controls)
         self.finish_button = self._button("结束并预览", self.finish_capture, controls)
@@ -218,7 +217,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(icon))
         self.tray = QSystemTrayIcon(QIcon(icon), self)
         menu = QMenu(self)
-        for label, callback in [("显示窗口 / 暂停", self.restore), ("继续采集", self.start_capture),
+        for label, callback in [("显示窗口", self.restore), ("暂停采集", self.pause_capture), ("继续采集", self.start_capture),
                                 ("结束并预览", self.finish_capture)]:
             action = QAction(label, self)
             action.triggered.connect(callback)
@@ -257,10 +256,27 @@ class MainWindow(QMainWindow):
     def error(self, message):
         QMessageBox.warning(self, "需要处理", str(message))
 
+    def background_capture(self):
+        return bool(self.worker and getattr(self.worker, "background", False))
+
+    def show_capture_hint(self):
+        if not self.automatic.isChecked():
+            text = "支持缓慢连续滚动；主窗口恢复时自动暂停。位置待确认时请减速。"
+        elif self.auto_settings.input_mode == "visible_background":
+            text = "副屏可见模式：不移动鼠标或切换焦点，可在另一窗口工作。请勿遮挡、移动或最小化阅读器；Ctrl+Shift+F8 / 托盘暂停。"
+        else:
+            text = "前台模式：开始后有 2.5 秒准备时间。鼠标会移入选区；Esc、移出鼠标或切换窗口可暂停。"
+        self.warning.setText(text)
+
     def configure_automatic(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("自动滚动设置")
         form = QFormLayout(dialog)
+        mode = QComboBox()
+        mode.addItem("前台滚动（使用鼠标）", "foreground")
+        mode.addItem("副屏可见（不占用鼠标和焦点，试验版）", "visible_background")
+        mode.setCurrentIndex(mode.findData(self.auto_settings.input_mode))
+        form.addRow("滚动方式", mode)
         controls = {}
         for key, label, low, high, suffix in [
             ("step_percent", "目标步长（视口高度）", 15, 45, "%"),
@@ -282,9 +298,10 @@ class MainWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.auto_settings = AutoSettings(**{key: spin.value() for key, spin in controls.items()})
+            self.auto_settings = AutoSettings(**{key: spin.value() for key, spin in controls.items()}, input_mode=mode.currentData())
+            self.show_capture_hint()
 
-    def run_job(self, function, success, message):
+    def run_job(self, function, success, message, quiet=False):
         if self.job is not None:
             return
         self.status.setText(message)
@@ -296,14 +313,15 @@ class MainWindow(QMainWindow):
             self.job = None
             if job.error:
                 self.status.setText(f"操作失败：{job.error}")
-                if not self.closing:
+                if not self.closing and not quiet:
                     self.error(job.error)
             elif not self.closing:
                 try:
                     success(job.result)
                 except Exception as exc:
                     self.status.setText(f"操作失败：{exc}")
-                    self.error(exc)
+                    if not quiet:
+                        self.error(exc)
             job.deleteLater()
             self.update_controls()
             if self.closing:
@@ -371,8 +389,12 @@ class MainWindow(QMainWindow):
         if self.worker:
             if not self.worker.pause_event.is_set():
                 return
-            self.showMinimized()
-            QTimer.singleShot(900, self.resume_worker)
+            if self.background_capture():
+                self.worker.resume()
+                self.update_controls()
+            else:
+                self.showMinimized()
+                QTimer.singleShot(900, self.resume_worker)
             return
         if (self.directory / "session.json").exists():
             response = QMessageBox.question(self, "继续已有会话", "请保持原阅读器、缩放和选区不变，并返回最后采集位置附近。继续会使已有分页修改失效，结束后重新识别。是否继续？")
@@ -438,32 +460,40 @@ class MainWindow(QMainWindow):
 
     def capture_problem(self, reason):
         self.warning.setText(REASONS.get(reason, reason) + " 请返回最后成功采集位置附近，再继续。若结束，仅保留此前已确认内容。")
-        self.restore()
+        if self.background_capture():
+            self.tray.showMessage("VDC 已暂停", REASONS.get(reason, reason), QSystemTrayIcon.MessageIcon.Warning)
+        else:
+            self.restore()
 
     def capture_finished(self):
         worker = self.worker
         self.worker = None
         cancelled = worker.cancelled
+        background = getattr(worker, "background", False)
         worker.deleteLater()
         self.update_controls()
         if self.closing:
             self.close()
             return
-        self.restore()
+        if not background:
+            self.restore()
         if cancelled:
             self.status.setText("采集已停止，已有内容仍保存在会话目录，可通过打开已有会话查看。")
             return
-        self.load_directory(self.directory, force=True)
+        if background:
+            self.tray.showMessage("VDC 采集已停止", "可从托盘打开窗口查看分页预览；不会自动切换你的工作窗口。")
+        self.load_directory(self.directory, force=True, quiet=background)
 
     def restore(self):
-        self.pause_capture()
+        if not self.background_capture():
+            self.pause_capture()
         self.showNormal()
         self.raise_()
         self.activateWindow()
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange and not self.isMinimized() and self.worker:
+        if event.type() == QEvent.Type.WindowStateChange and not self.isMinimized() and self.worker and not self.background_capture():
             self.pause_capture()
 
     def open_session(self):
@@ -474,8 +504,9 @@ class MainWindow(QMainWindow):
                 return
             self.load_directory(Path(directory))
 
-    def load_directory(self, directory, force=False, selected=0):
+    def load_directory(self, directory, force=False, selected=0, quiet=False):
         directory = Path(directory)
+        self.quiet_preview = quiet
 
         def loaded(result):
             if self.directory != directory or force:
@@ -490,7 +521,7 @@ class MainWindow(QMainWindow):
             self.store, self.review, thumbs = result
             self.update_labels()
             self.present_review(thumbs, selected)
-        self.run_job(lambda: load_review(directory, force), loaded, "正在读取会话并识别分页…")
+        self.run_job(lambda: load_review(directory, force), loaded, "正在读取会话并识别分页…", quiet=quiet)
 
     def present_review(self, thumbs, selected=0):
         self.reviewed.setChecked(False)
@@ -540,7 +571,8 @@ class MainWindow(QMainWindow):
             self.fit_preview()
             self.status.setText(f"第 {page.page_id} / {len(self.review.pages)} 页 · 置信度 {page.confidence:.0%} · "
                                 + ("检测为完整页面" if page.complete else "不完整或人工修改，请检查"))
-        self.run_job(lambda: self.store.read_rows(page.top, page.bottom)[:, page.left:page.right], shown, "正在加载页面…")
+        self.run_job(lambda: self.store.read_rows(page.top, page.bottom)[:, page.left:page.right], shown, "正在加载页面…",
+                     quiet=self.quiet_preview)
 
     def fit_preview(self):
         if not self.scene.sceneRect().isEmpty():
