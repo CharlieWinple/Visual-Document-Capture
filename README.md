@@ -6,6 +6,8 @@
 
 ## 安装与运行
 
+Windows 11 x64 可从 [v0.4.2 预发布版](https://github.com/CharlieWinple/Visual-Document-Capture/releases/tag/v0.4.2) 下载免安装 ZIP。完整解压后双击 `VisualDocumentCapture.exe`，无需安装 Python；保留 `_internal` 文件夹，会话和日志保存在解压目录的 `sessions` 与 `logs`。程序未签名，尚未完成全新电脑及所有阅读器兼容性验收。下面是源码运行方式。
+
 需要 Python 3.12+。开发环境使用 Python 3.13。Windows PowerShell 在项目目录执行：
 
 ```powershell
