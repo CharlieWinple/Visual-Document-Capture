@@ -3,6 +3,8 @@ from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 import uuid
+import time
+import json
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QSize, QEvent, QPoint, QUrl
@@ -10,7 +12,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QDesktopSer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
+    QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
     QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QComboBox, QGridLayout,
 )
 from vdc.app.session import Review, new_capture, read_capture
@@ -41,21 +43,22 @@ def warning_text(value):
         return "部分区域看不清纸张侧边或背景，请检查裁切与分页"
     if value.startswith("uncertain_paper_geometry"):
         return "存在无法确认的纸张轮廓，请检查是否漏页"
-    return {"no_reliable_page_boundaries": "未能可靠识别原始分页",
+    return {"gap_guided_horizontal_bounds_require_review": "已按实际页间隔微调；左右裁切沿用人工标定，请检查首尾页和横向范围",
+            "no_reliable_page_boundaries": "未能可靠识别原始分页",
             "page_geometry_conflict_requires_review": "部分页面与学习到的尺寸不符，请检查页间隔或混合尺寸页",
             "calibrated_boundaries_require_review": "有根据标定推算的页边，尚未获得视觉验证，请逐页确认",
             "geometry_assisted_boundaries_require_review": "部分页间隔由同尺寸规律辅助定位，视觉证据较弱，请检查",
             "incomplete_or_uncertain_pages_require_review": "存在不完整或不确定页面，需要逐页检查"}.get(value, value)
 
 
-def load_review(directory, force=False):
-    store = SegmentStore(directory)
+def load_review(directory, force=False, existing_store=None):
+    store = existing_store or SegmentStore(directory, lambda n, total: Job.report("校验已保存图像", n, total))
     width, height = store.state["width"], store.state["height"]
     if not height:
         raise ValueError("尚未保存有效画面。请开始采集，并在滚动前停留片刻。")
     review = None if force else Review.load(directory, width, height)
     if review is None:
-        result = detect_page_boundaries(store.iter_blocks())
+        result = detect_page_boundaries(store.iter_blocks(), lambda n: Job.report("识别页边", n, height))
         if not result.pages:
             # Explicit provisional slices keep otherwise inaccessible content
             # editable. Never label these as recovered original pages.
@@ -65,7 +68,8 @@ def load_review(directory, force=False):
         review = Review(result.pages, result.warnings, width, height, result.geometry)
         review.save(directory)
     thumbs = []
-    for page in review.pages:
+    for index, page in enumerate(review.pages):
+        Job.report("生成页面预览", index, len(review.pages))
         image = Image.fromarray(store.read_rows(page.top, page.bottom)[:, page.left:page.right])
         image.thumbnail((140, 180))
         thumbs.append(np.array(image))
@@ -140,12 +144,16 @@ class MainWindow(QMainWindow):
         self.pause_button = self._button("暂停", self.pause_capture, controls)
         self.finish_button = self._button("结束并预览", self.finish_capture, controls)
         self.cancel_button = self._button("停止采集（保留会话）", self.cancel_capture, controls)
+        self.recovery_button = self._button("查看恢复位置", self.show_recovery, controls)
         controls.addStretch()
         layout.addLayout(controls)
         self.status = QLabel("就绪 · 可先打开演示阅读器，试用完整采集流程。")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("background: #e9f2f6; color: #173c50; padding: 12px; border-radius: 6px;")
         layout.addWidget(self.status)
+        self.processing = QProgressBar()
+        self.processing.hide()
+        layout.addWidget(self.processing)
         self.warning = QLabel("支持缓慢连续滚动；主窗口恢复时自动暂停。位置待确认时请减速，无法验证时会暂停提示回滚。")
         self.warning.setWordWrap(True)
         self.warning.setStyleSheet("color: #8a4b06;")
@@ -281,6 +289,8 @@ class MainWindow(QMainWindow):
         self.automatic.setEnabled(not busy and not running)
         self.auto_settings_button.setEnabled(not busy and not running and self.automatic.isChecked())
         paused = running and self.worker.pause_event.is_set()
+        self.recovery_button.setEnabled(bool(self.directory and not busy and (not running or paused)
+                                            and (self.directory / "session.json").exists()))
         for button in [self.new_button, self.open_button, self.demo_button]:
             button.setEnabled(not busy and not running)
         self.start_button.setText("继续采集" if running or self.store is not None else
@@ -354,9 +364,29 @@ class MainWindow(QMainWindow):
         self.status.setText(message)
         job = Job(function, self)
         self.job = job
+        started = time.monotonic()
+        stage = [message, 0, 0]
+        self.processing.setRange(0, 0)
+        self.processing.show()
+        timer = QTimer(self)
+        def refresh():
+            label, completed, total = stage
+            detail = f" · {completed}/{total}" if total else ""
+            self.status.setText(f"{label}{detail} · 已用时 {time.monotonic()-started:.0f} 秒")
+        def progress(label, completed, total):
+            stage[:] = [label, completed, total]
+            self.processing.setRange(0, total)
+            self.processing.setValue(completed)
+            refresh()
+        job.progress.connect(progress)
+        timer.timeout.connect(refresh)
+        timer.start(1000)
         self.update_controls()
 
         def done():
+            timer.stop()
+            timer.deleteLater()
+            self.processing.hide()
             self.job = None
             if job.error:
                 self.status.setText(f"操作失败：{job.error}")
@@ -507,11 +537,53 @@ class MainWindow(QMainWindow):
         self.update_controls()
 
     def capture_problem(self, reason):
-        self.warning.setText(REASONS.get(reason, reason) + " 请返回最后成功采集位置附近，再继续。若结束，仅保留此前已确认内容。")
+        self.warning.setText(REASONS.get(reason, reason) + " 点击“查看恢复位置”，对照最后可信截图调整阅读器，再继续。若结束，仅保留此前已确认内容。")
         if self.background_capture():
             self.tray.showMessage("VDC 已暂停", REASONS.get(reason, reason), QSystemTrayIcon.MessageIcon.Warning)
         else:
             self.restore()
+
+    def show_recovery(self):
+        if not self.directory or self.job or (self.worker and not self.worker.pause_event.is_set()):
+            return
+        directory = self.directory
+        def read_reference():
+            # Read only the committed reference, without decoding the whole session.
+            state = json.loads((directory / "session.json").read_text(encoding="utf-8"))
+            name = state.get("reference")
+            if not name:
+                raise ValueError("尚无可信截图，请从起点重新开始采集")
+            SegmentStore._safe_filename(name)
+            with Image.open(directory / name) as image:
+                pixels = np.array(image.convert("RGB"))
+            return state, pixels
+        def show(result):
+            state, pixels = result
+            dialog = QDialog(self)
+            dialog.setWindowTitle("恢复位置 · 最后可信截图")
+            dialog.resize(850, 700)
+            layout = QVBoxLayout(dialog)
+            position = state["position"]
+            page = next((p.page_id for p in self.review.pages if p.top <= position < p.bottom), None) if self.review else None
+            location = f"，位于当前分页第 {page} 页附近" if page else ""
+            label = QLabel(f"可信截图范围：y={position}–{position+len(pixels)} px{location}。"
+                           f"已保存至 {state['height']} px。\n"
+                           "请在阅读器中找到图中相同文字或图形，保持原来的缩放和窗口位置，"
+                           "滚动到与截图充分重叠后关闭此窗口，点击继续采集。程序会再次验证连接位置。"
+                           "这里的页序不是文档印刷页码。")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            scene = QGraphicsScene(dialog)
+            scene.addPixmap(pixmap(pixels))
+            view = QGraphicsView(scene)
+            layout.addWidget(view)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            dialog.show()
+            view.fitInView(scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            dialog.exec()
+        self.run_job(read_reference, show, "正在读取最后可信截图…")
 
     def capture_finished(self):
         worker = self.worker
@@ -552,7 +624,7 @@ class MainWindow(QMainWindow):
                 return
             self.load_directory(Path(directory))
 
-    def load_directory(self, directory, force=False, selected=0, quiet=False):
+    def load_directory(self, directory, force=False, selected=0, quiet=False, reuse_store=False):
         directory = Path(directory)
         self.quiet_preview = quiet
 
@@ -570,7 +642,8 @@ class MainWindow(QMainWindow):
             self.store, self.review, thumbs = result
             self.update_labels()
             self.present_review(thumbs, selected)
-        self.run_job(lambda: load_review(directory, force), loaded, "正在读取会话并识别分页…", quiet=quiet)
+        existing_store = self.store if reuse_store and self.directory == directory and not force and not self.worker else None
+        self.run_job(lambda: load_review(directory, force, existing_store), loaded, "正在读取会话并识别分页…", quiet=quiet)
 
     def present_review(self, thumbs, selected=0):
         joins = self.store.state.get("geometry_joins", [])
@@ -608,8 +681,10 @@ class MainWindow(QMainWindow):
             self.warning.setText("自动滚动已结束：多次无位移且可见页底。请核对最后一页，慢加载内容可能需要继续采集。\n" + self.warning.text())
         if self.review.geometry:
             g = self.review.geometry
-            method = "自动学习" if g["source"] == "learned" else "人工标定"
+            method = {"learned": "自动学习", "manual_refined": "人工标定＋自动微调", "manual_gap_refined": "页间隔自动微调"}.get(g["source"], "人工标定")
             self.warning.setText(self.warning.text() + f"\n{method}：页高约 {g['height']} px，页间距约 {g['gap']} px，周期约 {g['period']} px。")
+            if "verified_pages" in g:
+                self.warning.setText(self.warning.text() + f" 已验证 {g['verified_pages']} 页，待确认 {g['unverified_pages']} 页。")
         self.status.setText(f"分页预览 · {len(self.review.pages)} 页 · 修改会自动保存到本地会话")
         self.scene.clear()
         self.pages.setCurrentRow(min(selected, len(self.review.pages) - 1))
@@ -658,7 +733,7 @@ class MainWindow(QMainWindow):
             self.undo_stack.append(self.review)
             self.undo_stack = self.undo_stack[-20:]
             self.review = updated
-            self.load_directory(self.directory, selected=index)
+            self.load_directory(self.directory, selected=index, reuse_store=True)
         except Exception as exc:
             self.error(exc)
 
@@ -696,7 +771,7 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self.error(exc)
             return
-        default_gap = (self.review.geometry or {}).get("gap", 20)
+        default_gap = round((self.review.geometry or {}).get("gap", 20))
         if index+1 < len(self.review.pages):
             observed_gap = self.review.pages[index+1].top-page.bottom
             if 0 <= observed_gap <= (page.bottom-page.top)//4:
@@ -743,10 +818,11 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "应用同尺寸标定", "将按当前完整页和间距重建分页列表。未获视觉验证的页边仍会标为待确认。是否替换当前分页编辑？") != QMessageBox.StandardButton.Yes:
             return
         def work():
-            result = calibrate_page_boundaries(self.store.iter_blocks(), anchor, gap)
+            result = calibrate_page_boundaries(self.store.iter_blocks(), anchor, gap,
+                lambda n: Job.report("微调标定与验证页边", n, self.store.state["height"]))
             review = Review(result.pages, result.warnings, self.store.state["width"], self.store.state["height"], result.geometry)
             review.save(self.directory)
-            return load_review(self.directory)
+            return load_review(self.directory, existing_store=self.store)
         def shown(result):
             self.undo_stack.append(self.review)
             self.undo_stack = self.undo_stack[-20:]
@@ -772,7 +848,7 @@ class MainWindow(QMainWindow):
             if destination.exists() and QMessageBox.question(self, "覆盖文件", f"{destination.name} 已存在，是否覆盖？") != QMessageBox.StandardButton.Yes:
                 return
         self.run_job(lambda: export_session(self.store, self.review.pagination(), destination,
-                                           allow_uncertain=self.reviewed.isChecked()),
+                                           allow_uncertain=self.reviewed.isChecked(), progress=Job.report),
                      lambda count: self.status.setText(f"导出成功 · {count} 页 · {destination}"),
                      "正在导出无损图像 PDF…")
 

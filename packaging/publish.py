@@ -26,19 +26,19 @@ def main():
         with urllib.request.urlopen(req, timeout=240) as response:
             return json.load(response)
     files = [ROOT / "dist/release" / name for name in
-             ("VisualDocumentCapture-v0.4.2-windows-x64.zip", "Source-v0.4.2.zip", "SHA256SUMS.txt")]
+             ("VisualDocumentCapture-v0.4.3-windows-x64.zip", "Source-v0.4.3.zip", "SHA256SUMS.txt")]
     for path in files:
         assert path.is_file()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     releases = request("releases")
-    matches = [r for r in releases if r["tag_name"] == "v0.4.2"]
+    matches = [r for r in releases if r["tag_name"] == "v0.4.3"]
     if matches:
         release = matches[0]
         if not release["draft"]:
-            raise RuntimeError("v0.4.2 already published; refusing to overwrite")
+            raise RuntimeError("v0.4.3 already published; refusing to overwrite")
     else:
-        release = request("releases", "POST", json.dumps({"tag_name": "v0.4.2", "target_commitish": commit,
-            "name": "v0.4.2 — Windows 免安装预览版", "draft": True, "prerelease": True,
+        release = request("releases", "POST", json.dumps({"tag_name": "v0.4.3", "target_commitish": commit,
+            "name": "v0.4.3 — Windows 免安装预览版", "draft": True, "prerelease": True,
             "body": (ROOT / "packaging/RELEASE_NOTES.md").read_text(encoding="utf-8")}).encode())
     for path in files:
         digest = "sha256:" + hashlib.file_digest(path.open("rb"), "sha256").hexdigest()

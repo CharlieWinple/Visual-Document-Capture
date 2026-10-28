@@ -20,6 +20,6 @@
 
 ## 发布
 
-确认打包自检和压缩包解压测试通过后，推送源提交。`packaging/publish.py` 使用现有 Git 凭据创建 v0.4.2 草稿、上传准备好的三个附件、比对远端 SHA256 和大小后转为预发布 Release。凭据只保留在进程内，不打印或写入文件。已发布版本不会被覆盖。
+确认打包自检和压缩包解压测试通过后，推送源提交。`packaging/publish.py` 使用现有 Git 凭据创建 v0.4.3 草稿、上传准备好的三个附件、比对远端 SHA256 和大小后转为预发布 Release。凭据只保留在进程内，不打印或写入文件。已发布版本不会被覆盖。
 
 技术参考：[PyInstaller 使用文档](https://www.pyinstaller.org/en/stable/usage.html)、[GitHub Releases API](https://docs.github.com/en/rest/releases/releases)、[附件 API](https://docs.github.com/en/rest/releases/assets)。

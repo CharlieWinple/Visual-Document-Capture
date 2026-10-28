@@ -148,3 +148,43 @@ def test_expanding_context_keeps_edit_and_blocks_close_while_loading(app, tmp_pa
     assert dialog.view.extent.bottom() == 950
     assert dialog.view.values["left"] == 90
     dialog.close()
+
+
+def test_job_progress_and_recovery_reference(app, tmp_path, monkeypatch):
+    import threading
+    from PySide6.QtWidgets import QLabel
+    from vdc.gui.jobs import Job
+    store = SegmentStore(tmp_path)
+    fixture = make_fixture()
+    store.add(fixture.canvas[:360])
+    store.add(fixture.canvas[100:460])
+    window = MainWindow(tmp_path)
+    release = threading.Event()
+    try:
+        def work():
+            Job.report("测试处理阶段", 3, 10)
+            release.wait(5)
+        window.run_job(work, lambda _: None, "开始测试")
+        wait(app, lambda: "3/10" in window.status.text())
+        assert window.processing.maximum() == 10
+        assert window.processing.value() == 3
+        release.set()
+        wait(app, lambda: window.job is None)
+        assert window.processing.isHidden()
+        window.directory = tmp_path
+        window.update_controls()
+        assert window.recovery_button.isEnabled()
+        labels = []
+        def inspect_dialog(dialog):
+            labels.extend(label.text() for label in dialog.findChildren(QLabel))
+            dialog.reject()
+            return QDialog.DialogCode.Rejected
+        monkeypatch.setattr(QDialog, "exec", inspect_dialog)
+        window.show_recovery()
+        wait(app, lambda: window.job is None and bool(labels))
+        assert any("y=100–460" in text for text in labels)
+        assert any("充分重叠" in text for text in labels)
+    finally:
+        release.set()
+        wait(app, lambda: window.job is None)
+        window.close()
