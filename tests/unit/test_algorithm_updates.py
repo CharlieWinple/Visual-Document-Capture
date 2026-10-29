@@ -114,3 +114,40 @@ def test_faint_watermarks_are_useful_texture():
                     .6, (246, 246, 246), 1, cv2.LINE_AA)
     result = estimate_scroll_offset(canvas[100:460], canvas[173:533])
     assert result.accepted and result.offset == 73
+
+
+def test_calibration_corrects_small_error_over_long_document():
+    canvas, bounds = uniform_document(count=60)
+    # Five pixels of error per period would drift by 300 pixels at the end.
+    anchor = PageBoundary(1, 41, 22, 599, 519, .5, False)
+    result = calibrate_page_boundaries([(0, canvas)], anchor, 23)
+    assert [(p.left, p.top, p.right, p.bottom) for p in result.pages] == bounds
+    assert result.geometry["source"] == "manual_refined"
+    assert result.geometry["period"] == 525
+    assert all(p.complete for p in result.pages)
+
+
+def test_detector_progress_across_block_boundaries():
+    canvas, _ = uniform_document()
+    updates = []
+    blocks = [(i, canvas[i:i+333]) for i in range(0, len(canvas), 333)]
+    result = detect_page_boundaries(blocks, updates.append)
+    assert len(result.pages) == 5
+    assert updates == sorted(updates)
+    assert updates[-1] == len(canvas)
+    assert len(updates) > 5
+
+
+def test_row_cache_preserves_pixels_and_avoids_redecode(tmp_path, monkeypatch):
+    fixture = make_fixture()
+    store = SegmentStore(tmp_path)
+    store.add(fixture.canvas[:360])
+    assert store.add(fixture.canvas[100:460]).accepted
+    expected = fixture.canvas[90:430]
+    assert np.array_equal(store.read_rows(90, 430), expected)
+    from PIL import Image
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("Repeated crop decoded a cached block")
+    monkeypatch.setattr(Image, "open", unexpected_read)
+    assert np.array_equal(store.read_rows(90, 430), expected)
+    assert store._cache_bytes <= 32*1024*1024

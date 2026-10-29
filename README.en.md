@@ -167,3 +167,10 @@ The project does not upload screenshots or bypass access controls. GitHub synchr
 - [OpenCV template matching](https://docs.opencv.org/4.x/d4/dc6/tutorial_py_template_matching.html): used to search for candidate displacements, with additional overlap verification and ambiguity rejection in this project.
 - [PyMuPDF Page API](https://pymupdf.readthedocs.io/en/latest/page.html): used to set page dimensions and embed screenshot images.
 - [Qt high-DPI coordinates](https://doc.qt.io/qt-6/highdpi.html): local coordinates within a monitor are converted using that monitor's scale factor; the virtual desktop origin is not scaled.
+
+
+### Reading and boundary review
+
+The preview now fits page width by default. Scroll vertically through long pages, use Ctrl + wheel to zoom, or choose Whole page / 100%. Page navigation preserves the zoom mode. F11 toggles focus mode; capture details and editing controls are collapsed until needed. The sidebar supports page-number navigation and filtering pages that need review. Boundary inspection shows continuous source pixels around adjacent pages with both crop lines overlaid.
+
+Automatic capture settings default to visible-background mode for new settings; reopening a session preserves its saved input mode. Keep the reader visible: this mode does not move it to another monitor automatically.

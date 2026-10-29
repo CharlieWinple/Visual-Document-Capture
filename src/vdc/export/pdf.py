@@ -40,8 +40,14 @@ def export_multipage_pdf(images, destination: str | Path, dpi: float = 96) -> in
             os.unlink(temporary)
 
 
-def export_session(store, pagination, destination, *, allow_uncertain=False):
+def export_session(store, pagination, destination, *, allow_uncertain=False, progress=None):
     if not allow_uncertain and (store.state.get("geometry_joins") or pagination.warnings or any(not p.complete for p in pagination.pages)):
         raise ValueError("Page boundaries require review before export")
-    return export_multipage_pdf(
-        (store.read_rows(p.top, p.bottom)[:, p.left:p.right] for p in pagination.pages), destination)
+    def images():
+        for index, page in enumerate(pagination.pages):
+            if progress:
+                progress("编码导出页面", index, len(pagination.pages))
+            yield store.read_rows(page.top, page.bottom)[:, page.left:page.right]
+        if progress:
+            progress("写入 PDF 文件", 0, 0)
+    return export_multipage_pdf(images(), destination)

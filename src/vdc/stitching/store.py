@@ -1,6 +1,8 @@
 """Append-only PNG blocks with an atomically replaced session manifest."""
 from dataclasses import asdict
 import json
+from bisect import bisect_right
+from collections import OrderedDict
 from pathlib import Path
 import uuid
 import numpy as np
@@ -9,7 +11,9 @@ from .alignment import Alignment, estimate_scroll_offset
 
 
 class SegmentStore:
-    def __init__(self, directory: str | Path):
+    def __init__(self, directory: str | Path, progress=None):
+        self._cache = OrderedDict()
+        self._cache_bytes = 0
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.directory / "session.json"
@@ -20,7 +24,9 @@ class SegmentStore:
             if self.state["version"] != 1:
                 raise ValueError("Unsupported session version")
             expected_top = 0
-            for block in self.state["blocks"]:
+            for index, block in enumerate(self.state["blocks"]):
+                if progress:
+                    progress(index, len(self.state["blocks"]))
                 self._safe_filename(block["file"])
                 if block["top"] != expected_top or block["height"] <= 0:
                     raise ValueError("Stored blocks are not contiguous")
@@ -31,6 +37,7 @@ class SegmentStore:
                 expected_top += block["height"]
             if expected_top != self.state["height"]:
                 raise ValueError("Stored height does not match block coverage")
+        self._block_tops = [b["top"] for b in self.state["blocks"]]
         ref = self.state["reference"]
         self.previous = self._load(ref) if ref else None
         if self.previous is not None and (self.previous.shape[1] != self.state["width"]
@@ -44,8 +51,20 @@ class SegmentStore:
 
     def _load(self, filename):
         self._safe_filename(filename)
+        if filename in self._cache:
+            self._cache.move_to_end(filename)
+            return self._cache[filename]
         with Image.open(self.directory / filename) as image:
-            return np.array(image.convert("RGB"))
+            pixels = np.array(image.convert("RGB"))
+        budget = 32 * 1024 * 1024
+        if pixels.nbytes <= budget:
+            while self._cache_bytes + pixels.nbytes > budget:
+                _, evicted = self._cache.popitem(last=False)
+                self._cache_bytes -= evicted.nbytes
+            pixels.flags.writeable = False
+            self._cache[filename] = pixels
+            self._cache_bytes += pixels.nbytes
+        return pixels
 
     def _save_image(self, image, prefix):
         filename = f"{prefix}-{uuid.uuid4().hex}.png"
@@ -98,6 +117,7 @@ class SegmentStore:
         temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
         temporary.replace(self.manifest_path)
         self.state, self.previous = state, frame.copy()
+        self._block_tops = [b["top"] for b in state["blocks"]]
         # Old reference is no longer needed after the manifest commit. Crash-created
         # orphan files are left intact for diagnosis; cleanup UI is Phase 1 work.
         if old_ref:
@@ -115,7 +135,11 @@ class SegmentStore:
         if not 0 <= top < bottom <= self.state["height"]:
             raise ValueError("Requested rows outside captured segment")
         result = np.empty((bottom - top, self.state["width"], 3), dtype=np.uint8)
-        for block in self.state["blocks"]:
+        start = max(0, bisect_right(self._block_tops, top)-1)
+        for index in range(start, len(self.state["blocks"])):
+            block = self.state["blocks"][index]
+            if block["top"] >= bottom:
+                break
             lo, hi = max(top, block["top"]), min(bottom, block["top"] + block["height"])
             if lo < hi:
                 pixels = self._load(block["file"])
