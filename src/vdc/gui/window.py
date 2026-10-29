@@ -8,11 +8,11 @@ import json
 import numpy as np
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QSize, QEvent, QPoint, QUrl
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QDesktopServices
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QDesktopServices, QPen
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
+    QMenu, QMessageBox, QProgressBar, QSizePolicy, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
     QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QComboBox, QGridLayout,
 )
 from vdc.app.session import Review, new_capture, read_capture
@@ -25,6 +25,7 @@ from vdc.pagination.detector import PageBoundary, detect_page_boundaries, calibr
 from vdc.stitching.store import SegmentStore
 from .images import pixmap
 from .jobs import Job
+from .preview import PreviewView
 from .selection import RegionSelector
 from .editor import VisualEditor, editor_context
 
@@ -93,7 +94,7 @@ class MainWindow(QMainWindow):
         self.closing = False
         self.selecting = False
         self.metadata = {}
-        self.auto_settings = AutoSettings()
+        self.auto_settings = AutoSettings(input_mode="visible_background")
         self.undo_stack = []
         self.quiet_preview = False
         self._build_ui()
@@ -116,52 +117,60 @@ class MainWindow(QMainWindow):
         body = QWidget()
         self.setCentralWidget(body)
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(22, 18, 22, 18)
-        heading = QLabel("Visual Document Capture")
-        heading.setStyleSheet("font-size: 24px; font-weight: 600; color: #174c66;")
-        layout.addWidget(heading)
-        layout.addWidget(QLabel("框选阅读区  →  手动 / 自动滚动采集  →  检查分页  →  导出 PDF"))
-        top = QHBoxLayout()
-        self.new_button = self._button("新建 · 框选区域", self.select_region, top)
-        self.open_button = self._button("打开已有会话", self.open_session, top)
-        self.demo_button = self._button("打开演示阅读器", self.open_demo, top)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(5)
+        self.top_panel = QWidget()
+        top = QHBoxLayout(self.top_panel)
+        top.setContentsMargins(0, 0, 0, 0)
+        self.new_button = self._button("新建采集", self.select_region, top)
+        self.open_button = self._button("打开会话", self.open_session, top)
+        self.start_button = self._button("开始采集", self.start_capture, top)
+        self.pause_button = self._button("暂停", self.pause_capture, top)
+        self.finish_button = self._button("结束并预览", self.finish_capture, top)
         top.addStretch()
-        layout.addLayout(top)
-        self.region_label = QLabel("尚未选择区域。框选时请保留纸张两侧背景和页间空隙。")
-        self.path_label = QLabel("会话会自动保存到本地 sessions 文件夹。")
+        self.details_toggle = self._button("采集设置 / 详情", lambda: None, top)
+        self.details_toggle.setCheckable(True)
+        layout.addWidget(self.top_panel)
+        self.details_panel = QWidget()
+        details = QVBoxLayout(self.details_panel)
+        details.setContentsMargins(4, 4, 4, 4)
+        self.region_label = QLabel("尚未选择区域。框选时请保留页间空隙。")
+        self.path_label = QLabel("会话自动保存到本地 sessions 文件夹。")
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.path_label.setWordWrap(True)
-        layout.addWidget(self.region_label)
-        layout.addWidget(self.path_label)
+        details.addWidget(self.region_label)
+        details.addWidget(self.path_label)
         controls = QHBoxLayout()
         self.automatic = QCheckBox("自动滚动")
-        self.automatic.setToolTip("在自动设置中选择前台滚动或副屏可见、不占用鼠标的滚动方式。")
         controls.addWidget(self.automatic)
         self.auto_settings_button = self._button("自动设置", self.configure_automatic, controls)
         self.automatic.toggled.connect(self.update_controls)
         self.automatic.toggled.connect(self.show_capture_hint)
-        self.start_button = self._button("开始采集", self.start_capture, controls)
-        self.pause_button = self._button("暂停", self.pause_capture, controls)
-        self.finish_button = self._button("结束并预览", self.finish_capture, controls)
-        self.cancel_button = self._button("停止采集（保留会话）", self.cancel_capture, controls)
+        self.cancel_button = self._button("停止并保留会话", self.cancel_capture, controls)
         self.recovery_button = self._button("查看恢复位置", self.show_recovery, controls)
+        self.demo_button = self._button("演示阅读器", self.open_demo, controls)
         controls.addStretch()
-        layout.addLayout(controls)
-        self.status = QLabel("就绪 · 可先打开演示阅读器，试用完整采集流程。")
-        self.status.setWordWrap(True)
-        self.status.setStyleSheet("background: #e9f2f6; color: #173c50; padding: 12px; border-radius: 6px;")
-        layout.addWidget(self.status)
+        details.addLayout(controls)
+        self.warning = QLabel("自动设置默认为副屏可见模式；阅读区需保持可见。")
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet("color: #8a4b06;")
+        details.addWidget(self.warning)
+        layout.addWidget(self.details_panel)
+        self.details_panel.hide()
+        self.details_toggle.toggled.connect(self.details_panel.setVisible)
+        self.summary_button = QPushButton("就绪 · 点击查看采集设置与提示")
+        self.summary_button.setStyleSheet("text-align: left; background: #e9f2f6; color: #173c50;")
+        self.summary_button.clicked.connect(lambda: self.details_toggle.setChecked(not self.details_toggle.isChecked()))
+        layout.addWidget(self.summary_button)
         self.processing = QProgressBar()
         self.processing.hide()
         layout.addWidget(self.processing)
-        self.warning = QLabel("支持缓慢连续滚动；主窗口恢复时自动暂停。位置待确认时请减速，无法验证时会暂停提示回滚。")
-        self.warning.setWordWrap(True)
-        self.warning.setStyleSheet("color: #8a4b06;")
-        layout.addWidget(self.warning)
+        self.status = QLabel("就绪")
+        self.status.setWordWrap(False)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         split = QSplitter()
         self.pages = QListWidget()
-        self.pages.setMinimumWidth(180)
-        self.pages.setMaximumWidth(250)
+        self.pages.setMinimumWidth(130)
         self.pages.setIconSize(QSize(140, 180))
         self.pages.setViewMode(QListView.ViewMode.IconMode)
         self.pages.setMovement(QListView.Movement.Static)
@@ -169,7 +178,22 @@ class MainWindow(QMainWindow):
         self.pages.setWrapping(False)
         self.pages.setFlow(QListView.Flow.TopToBottom)
         self.pages.currentRowChanged.connect(self.select_page)
-        split.addWidget(self.pages)
+        self.sidebar = QWidget()
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_jump = QSpinBox()
+        self.page_jump.setRange(1, 1)
+        self.page_jump.setPrefix("跳转到第 ")
+        self.page_jump.setSuffix(" 页")
+        self.page_jump.valueChanged.connect(self.jump_page)
+        sidebar_layout.addWidget(self.page_jump)
+        self.pending_only = QCheckBox("仅显示待确认页")
+        self.pending_only.toggled.connect(self.filter_pages)
+        sidebar_layout.addWidget(self.pending_only)
+        sidebar_layout.addWidget(self.pages, 1)
+        self.sidebar.setMinimumWidth(160)
+        self.sidebar.setMaximumWidth(220)
+        split.addWidget(self.sidebar)
         pane = QWidget()
         pane_layout = QVBoxLayout(pane)
         pane_layout.setContentsMargins(0, 0, 0, 0)
@@ -177,16 +201,38 @@ class MainWindow(QMainWindow):
         self.page_heading.setStyleSheet("font-weight: 600; color: #174c66; padding: 6px;")
         pane_layout.addWidget(self.page_heading)
         self.scene = QGraphicsScene()
-        self.view = QGraphicsView(self.scene)
+        self.view = PreviewView(self.scene)
         self.view.setBackgroundBrush(QColor("#dfe5ea"))
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         pane_layout.addWidget(self.view, 1)
         zoom = QHBoxLayout()
-        self._button("适应窗口", self.fit_preview, zoom)
-        self._button("放大", lambda: self.view.scale(1.25, 1.25), zoom)
-        self._button("缩小", lambda: self.view.scale(0.8, 0.8), zoom)
+        self._button("适应宽度", lambda: self.view.set_mode("width"), zoom)
+        self._button("整页", lambda: self.view.set_mode("page"), zoom)
+        self._button("100%", lambda: self.view.set_mode("actual"), zoom)
+        self._button("＋", lambda: self.view.zoom(1.25), zoom)
+        self._button("－", lambda: self.view.zoom(.8), zoom)
+        self.zoom_label = QLabel("100%")
+        self.view.zoom_changed.connect(lambda value: self.zoom_label.setText(f"{value:.0%}"))
+        zoom.addWidget(self.zoom_label)
+        self.boundary_button = self._button("检查分界", self.inspect_boundary, zoom)
+        self.edit_toggle = self._button("编辑工具", lambda: None, zoom)
+        self.edit_toggle.setCheckable(True)
         zoom.addStretch()
-        pane_layout.addLayout(zoom)
+        self.sidebar_toggle = self._button("缩略图", lambda: None, zoom)
+        self.sidebar_toggle.setCheckable(True)
+        self.sidebar_toggle.setChecked(True)
+        self.sidebar_toggle.toggled.connect(self.sidebar.setVisible)
+        self.focus_button = self._button("专注预览", lambda: None, zoom)
+        self.focus_button.setCheckable(True)
+        self.focus_button.setShortcut("F11")
+        self.focus_button.toggled.connect(self.toggle_focus)
+        pane_layout.insertLayout(1, zoom)
+        self.edit_panel = QWidget()
+        edit_layout = QVBoxLayout(self.edit_panel)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        pane_layout.addWidget(self.edit_panel)
+        self.edit_panel.hide()
+        self.edit_toggle.toggled.connect(self.edit_panel.setVisible)
         edit = QHBoxLayout()
         edit.addWidget(QLabel("页面编辑"))
         self.visual_crop_button = self._button("调整裁切", lambda: self.visual_edit("crop"), edit)
@@ -196,11 +242,11 @@ class MainWindow(QMainWindow):
         self.merge_button = self._button("与下一页合并", self.merge_page, edit)
         self.undo_button = self._button("撤销修改", self.undo_edit, edit)
         edit.addStretch()
-        pane_layout.addLayout(edit)
+        edit_layout.addLayout(edit)
         self.precise_toggle = QPushButton("+ 精确调整 · 像素坐标")
         self.precise_toggle.setCheckable(True)
         self.precise_toggle.setStyleSheet("text-align: left; color: #174c66; border: none;")
-        pane_layout.addWidget(self.precise_toggle)
+        edit_layout.addWidget(self.precise_toggle)
         self.precise_panel = QWidget()
         self.precise_panel.setObjectName("precisePanel")
         precise = QVBoxLayout(self.precise_panel)
@@ -226,12 +272,12 @@ class MainWindow(QMainWindow):
         apply_row.addStretch()
         self.apply_button = self._button("应用边界调整", self.apply_crop, apply_row)
         precise.addLayout(apply_row)
-        pane_layout.addWidget(self.precise_panel)
+        edit_layout.addWidget(self.precise_panel)
         self.precise_panel.hide()
         self.precise_toggle.toggled.connect(self.precise_panel.setVisible)
         self.precise_toggle.toggled.connect(lambda checked: self.precise_toggle.setText(
             ("−" if checked else "+") + " 精确调整 · 像素坐标"))
-        self.precise_toggle.toggled.connect(lambda: QTimer.singleShot(0, self.fit_preview))
+        self.precise_toggle.toggled.connect(lambda: QTimer.singleShot(0, self.view.apply_mode))
         more = QHBoxLayout()
         more.addWidget(QLabel("其他操作"))
         self.calibrate_button = self._button("可视化标定", self.calibrate, more)
@@ -241,7 +287,7 @@ class MainWindow(QMainWindow):
         more.addStretch()
         self.delete_button = self._button("删除此页", self.delete_page, more)
         self.delete_button.setStyleSheet("color: #a23b3b;")
-        pane_layout.addLayout(more)
+        edit_layout.addLayout(more)
         split.addWidget(pane)
         split.setStretchFactor(1, 1)
         layout.addWidget(split, 1)
@@ -250,8 +296,13 @@ class MainWindow(QMainWindow):
         footer.addWidget(self.reviewed)
         footer.addStretch()
         self.export_button = self._button("导出多页 PDF", self.export_pdf, footer)
-        layout.addLayout(footer)
-        self.setStyleSheet("QPushButton { padding: 7px 10px; border: 1px solid #ccd7df; border-radius: 5px; background: #ffffff; } QPushButton:hover { background: #edf5fa; border-color: #739db4; } QPushButton:disabled { color: #929da5; background: #f5f7f9; } QListWidget { background: #f5f8fa; border: 1px solid #d7e0e7; border-radius: 6px; } QSpinBox { padding: 4px; } QWidget#precisePanel { background: #eef3f7; border-radius: 6px; }")
+        self.footer_panel = QWidget()
+        self.footer_panel.setLayout(footer)
+        layout.addWidget(self.footer_panel)
+        top.addWidget(self.export_button)
+        layout.addWidget(self.status)
+        split.setSizes([180, 900])
+        self.setStyleSheet("QPushButton { padding: 5px 8px; border: 1px solid #ccd7df; border-radius: 5px; background: #ffffff; } QPushButton:hover { background: #edf5fa; border-color: #739db4; } QPushButton:disabled { color: #929da5; background: #f5f7f9; } QListWidget { background: #f5f8fa; border: 1px solid #d7e0e7; border-radius: 6px; } QSpinBox { padding: 4px; } QWidget#precisePanel { background: #eef3f7; border-radius: 6px; }")
 
     def update_crop_size(self):
         if not hasattr(self, "crop_size"):
@@ -300,10 +351,13 @@ class MainWindow(QMainWindow):
         self.finish_button.setEnabled(running)
         self.cancel_button.setEnabled(running)
         self.pages.setEnabled(not busy and not running)
+        self.page_jump.setEnabled(not busy and not running and self.review is not None)
+        self.pending_only.setEnabled(not busy and not running and self.review is not None)
         has_pages = self.review is not None and bool(self.review.pages)
         selected = has_pages and self.pages.currentRow() >= 0
         for button in [self.apply_button, self.split_button, self.merge_button, self.delete_button, self.calibrate_button, self.visual_crop_button]:
             button.setEnabled(not busy and not running and selected)
+        self.boundary_button.setEnabled(not busy and not running and selected and len(self.review.pages) > 1)
         self.redetect_button.setEnabled(not busy and not running and self.store is not None)
         self.export_button.setEnabled(not busy and not running and has_pages)
         self.undo_button.setEnabled(not busy and not running and bool(self.undo_stack))
@@ -537,6 +591,8 @@ class MainWindow(QMainWindow):
         self.update_controls()
 
     def capture_problem(self, reason):
+        self.details_toggle.setChecked(True)
+        self.summary_button.setText("采集已暂停 · 请查看恢复位置与提示")
         self.warning.setText(REASONS.get(reason, reason) + " 点击“查看恢复位置”，对照最后可信截图调整阅读器，再继续。若结束，仅保留此前已确认内容。")
         if self.background_capture():
             self.tray.showMessage("VDC 已暂停", REASONS.get(reason, reason), QSystemTrayIcon.MessageIcon.Warning)
@@ -634,7 +690,7 @@ class MainWindow(QMainWindow):
             self.directory = directory
             self.metadata = read_capture(directory)
             self.metadata["retained_fragments"] = (directory / "fragments").exists()
-            self.auto_settings = AutoSettings(**self.metadata.get("auto_settings", {}))
+            self.auto_settings = AutoSettings(**{"input_mode": "visible_background", **self.metadata.get("auto_settings", {})})
             self.automatic.setChecked(self.metadata.get("mode") == "automatic")
             if self.metadata.get("state") in ("capturing", "starting", "paused", "pending", "auto_waiting", "auto_rollback", "auto_blank_probe"):
                 self.metadata["needs_recovery"] = True
@@ -686,6 +742,14 @@ class MainWindow(QMainWindow):
             if "verified_pages" in g:
                 self.warning.setText(self.warning.text() + f" 已验证 {g['verified_pages']} 页，待确认 {g['unverified_pages']} 页。")
         self.status.setText(f"分页预览 · {len(self.review.pages)} 页 · 修改会自动保存到本地会话")
+        pending = sum(not p.complete or p.confidence < .8 for p in self.review.pages)
+        self.summary_button.setText(f"{len(self.review.pages)} 页 · {len(self.review.pages)-pending} 页已验证 · {pending} 页待确认"
+                                    + (" · 采集未确认完成" if self.metadata.get("needs_recovery") else "") + " · 查看详情")
+        self.summary_button.setToolTip(self.warning.text())
+        self.page_jump.blockSignals(True)
+        self.page_jump.setMaximum(max(1, len(self.review.pages)))
+        self.page_jump.blockSignals(False)
+        self.filter_pages()
         self.scene.clear()
         self.pages.setCurrentRow(min(selected, len(self.review.pages) - 1))
         self.update_controls()
@@ -699,6 +763,9 @@ class MainWindow(QMainWindow):
         if self.review is None or index < 0 or index >= len(self.review.pages) or self.job:
             return
         page = self.review.pages[index]
+        self.page_jump.blockSignals(True)
+        self.page_jump.setValue(index+1)
+        self.page_jump.blockSignals(False)
         self.page_heading.setText(f"第 {index+1} / {len(self.review.pages)} 页 · {page.right-page.left} × {page.bottom-page.top} px · "
                                   + ("检测为完整页面" if page.complete else "需要检查"))
         for key, spin in self.bounds.items():
@@ -709,15 +776,78 @@ class MainWindow(QMainWindow):
             self.scene.clear()
             self.scene.addPixmap(pixmap(pixels))
             self.scene.setSceneRect(self.scene.itemsBoundingRect())
-            self.fit_preview()
+            self.view.new_page()
             self.status.setText(f"第 {page.page_id} / {len(self.review.pages)} 页 · 置信度 {page.confidence:.0%} · "
                                 + ("检测为完整页面" if page.complete else "不完整或人工修改，请检查"))
         self.run_job(lambda: self.store.read_rows(page.top, page.bottom)[:, page.left:page.right], shown, "正在加载页面…",
                      quiet=self.quiet_preview)
 
     def fit_preview(self):
-        if not self.scene.sceneRect().isEmpty():
-            self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.view.set_mode("page")
+
+    def jump_page(self, number):
+        if self.job or self.worker:
+            return
+        if self.pending_only.isChecked():
+            self.pending_only.setChecked(False)
+        self.pages.setCurrentRow(number-1)
+
+    def filter_pages(self, checked=None):
+        if self.review is None:
+            return
+        for i, page in enumerate(self.review.pages):
+            self.pages.item(i).setHidden(self.pending_only.isChecked() and page.complete and page.confidence >= .8)
+        if checked is not None and not self.job and not self.worker:
+            visible = [i for i in range(self.pages.count()) if not self.pages.item(i).isHidden()]
+            if visible and self.pages.currentRow() not in visible:
+                self.pages.setCurrentRow(visible[0])
+
+    def toggle_focus(self, enabled):
+        self.top_panel.setVisible(not enabled)
+        self.summary_button.setVisible(not enabled)
+        self.details_panel.setVisible(not enabled and self.details_toggle.isChecked())
+        self.edit_panel.setVisible(not enabled and self.edit_toggle.isChecked())
+        self.sidebar.setVisible(not enabled and self.sidebar_toggle.isChecked())
+        self.footer_panel.setVisible(not enabled)
+        self.edit_toggle.setVisible(not enabled)
+        self.sidebar_toggle.setVisible(not enabled)
+        self.focus_button.setText("退出专注 (F11)" if enabled else "专注预览")
+
+    def inspect_boundary(self):
+        if self.job or self.worker or not self.review or len(self.review.pages) < 2:
+            return
+        index = min(max(0, self.pages.currentRow()), len(self.review.pages)-2)
+        a, b = self.review.pages[index:index+2]
+        top = max(0, min(a.bottom, b.top)-300)
+        bottom = min(self.store.state["height"], max(a.bottom, b.top)+300)
+        if bottom-top > 12000:
+            self.error("两页边界距离过大，请先使用裁切工具检查页面范围。")
+            return
+        def shown(pixels):
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"检查分界 · 第 {index+1} / {index+2} 页")
+            dialog.resize(1050, 720)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(QLabel("蓝线：上一页裁切底边；橙线：下一页裁切顶边。图像为连续原始内容，包含间隔。"))
+            scene = QGraphicsScene(dialog)
+            item = scene.addPixmap(pixmap(pixels))
+            item.setPos(0, top)
+            for y, color in [(a.bottom, "#007ea0"), (b.top, "#c05100")]:
+                pen = QPen(QColor(color), 2)
+                pen.setCosmetic(True)
+                scene.addLine(0, y, self.store.state["width"], y, pen)
+            scene.setSceneRect(0, top, self.store.state["width"], bottom-top)
+            view = PreviewView(scene)
+            layout.addWidget(view, 1)
+            bar = QHBoxLayout()
+            self._button("适应宽度", lambda: view.set_mode("width"), bar)
+            self._button("100%", lambda: view.set_mode("actual"), bar)
+            self._button("关闭", dialog.accept, bar)
+            layout.addLayout(bar)
+            dialog.show()
+            view.new_page()
+            dialog.exec()
+        self.run_job(lambda: self.store.read_rows(top, bottom), shown, "正在读取相邻页面分界…")
 
     def edit(self, operation):
         if self.job or self.worker or self.review is None:

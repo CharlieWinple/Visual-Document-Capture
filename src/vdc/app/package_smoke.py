@@ -52,6 +52,7 @@ def main(directory):
     assert selected
     overlay.close()
     window = MainWindow(directory)
+    assert window.auto_settings.input_mode == "visible_background"
     window.show()
     window.load_directory(directory / "session")
     deadline = time.monotonic()+30
@@ -60,6 +61,15 @@ def main(directory):
         time.sleep(.01)
     assert window.review is not None and window.job is None
     assert len(window.review.pages) == 3
+    assert window.view.mode == "width"
+    window.view.set_mode("actual")
+    assert window.view.transform().m11() == 1
+    window.focus_button.setChecked(True)
+    app.processEvents()
+    assert window.top_panel.isHidden() and window.sidebar.isHidden()
+    window.focus_button.setChecked(False)
+    window.view.set_mode("width")
+    app.processEvents()
     page = window.review.pages[0]
     top, pixels = editor_context(store, page)
     editor = VisualEditor(pixels, top, page, parent=window, store=store)
@@ -76,4 +86,4 @@ def main(directory):
     window.close()
     app.processEvents()
     (directory / "result.json").write_text(json.dumps({"passed": True, "pages": 3,
-        "checks": ["automatic pixel reconstruction", "MSS monitor access", "selection", "page preview", "crop editor", "PDF export and render"]}, indent=2), encoding="utf-8")
+        "checks": ["automatic pixel reconstruction", "MSS monitor access", "selection", "page preview", "crop editor", "PDF export and render", "width preview and 100% zoom", "focus mode", "background default"]}, indent=2), encoding="utf-8")

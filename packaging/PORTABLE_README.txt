@@ -1,4 +1,4 @@
-Visual Document Capture 0.4.3 — Windows x64 免安装预览版
+Visual Document Capture 0.4.4 — Windows x64 免安装预览版
 
 1. 将 ZIP 完整解压到可写目录，例如“文档”文件夹下。
 2. 双击 VisualDocumentCapture.exe。无需安装 Python。
