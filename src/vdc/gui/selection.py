@@ -42,7 +42,7 @@ class SelectionOverlay(QWidget):
         painter.fillRect(16, 16, min(self.width() - 32, 760), 64, QColor(15, 28, 43, 235))
         painter.setPen(QColor("white"))
         painter.drawText(QRectF(30, 20, self.width() - 60, 56), Qt.AlignmentFlag.AlignVCenter,
-                         "拖动框选；拖动边缘可调整，内部可移动。Enter 确认 · Esc 取消\n请保留纸张左右背景及页间空隙，避开工具栏与滚动条。")
+                         "拖动框选；拖动边缘可调整，内部可移动。Enter 确认 · 右键或 Esc 取消\n请保留纸张左右背景及页间空隙，避开工具栏与滚动条。")
 
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -91,6 +91,12 @@ class SelectionOverlay(QWidget):
             r = r.normalized()
         self.selection = r.intersected(QRectF(self.rect()))
         self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.cancelled.emit()
+            return
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:

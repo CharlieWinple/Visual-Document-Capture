@@ -10,13 +10,13 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from vdc.app.fixtures import make_fixture
-from vdc.app.session import new_capture, read_capture
+from vdc.app.session import Review, new_capture, read_capture
 from vdc.capture.region import Region
 from vdc.capture.worker import CaptureWorker
 from vdc.capture.automatic import AutomaticCaptureWorker
 from vdc.automation.windows import InputInterrupted
 from vdc.gui.selection import SelectionOverlay
-from vdc.gui.window import MainWindow
+from vdc.gui.window import MainWindow, review_messages
 from vdc.stitching.store import SegmentStore
 
 
@@ -53,6 +53,14 @@ def test_selection_drag_resize_and_confirm(app):
     QTest.keyClick(overlay, Qt.Key.Key_Return)
     assert selected == [Region(-1000 + round(100 * dpr), 20 + round(100 * dpr), round(350 * dpr), round(300 * dpr))]
     overlay.close()
+
+
+def test_repeated_geometry_warnings_share_one_message():
+    ranges = [f"uncertain_paper_geometry:{i}:{i+1}" for i in range(200)]
+    review = Review([], ranges, 100, 200)
+    messages = review_messages(review, {"needs_recovery": True})
+    assert messages == ["存在无法确认的纸张轮廓，请检查是否漏页", "采集曾中断且尚未恢复，只能导出已确认的前段内容"]
+    assert review.warnings == ranges
 
 
 def test_worker_pause_failure_recovery_and_finish(app, tmp_path):
@@ -248,11 +256,12 @@ def test_automatic_worker_focus_pause_resume_and_stop(app, tmp_path):
 def test_automatic_mode_controls(app, tmp_path):
     window = MainWindow(tmp_path)
     try:
-        assert not window.automatic.isChecked()
-        assert not window.auto_settings_button.isEnabled()
-        window.automatic.setChecked(True)
+        assert window.automatic.isChecked()
         assert window.auto_settings_button.isEnabled()
         assert window.start_button.text() == "开始自动采集"
+        window.automatic.setChecked(False)
+        assert not window.auto_settings_button.isEnabled()
+        assert window.start_button.text() == "开始采集"
     finally:
         window.close()
 

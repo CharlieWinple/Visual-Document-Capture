@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QProgressBar, QSizePolicy, QPushButton, QScrollArea, QSpinBox, QSplitter, QListView,
-    QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QComboBox, QGridLayout,
+    QSystemTrayIcon, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QComboBox, QGridLayout, QStyle,
 )
 from vdc.app.session import Review, new_capture, read_capture
 from vdc.capture.region import Region
@@ -37,6 +37,11 @@ REASONS = {
     "frame_size_changed": "截图尺寸发生变化。",
     "before_session_start": "已滚到本次采集起点之前。",
 }
+
+
+def review_messages(review, metadata):
+    # Different coordinate ranges can map to the same user-facing warning.
+    return list(dict.fromkeys(map(warning_text, review.export_warnings(metadata))))
 
 
 def warning_text(value):
@@ -127,6 +132,9 @@ class MainWindow(QMainWindow):
         self.start_button = self._button("开始采集", self.start_capture, top)
         self.pause_button = self._button("暂停", self.pause_capture, top)
         self.finish_button = self._button("结束并预览", self.finish_capture, top)
+        self.start_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.finish_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.finish_button.setToolTip("结束本次采集，识别分页并打开预览")
         top.addStretch()
         self.details_toggle = self._button("采集设置 / 详情", lambda: None, top)
         self.details_toggle.setCheckable(True)
@@ -142,6 +150,7 @@ class MainWindow(QMainWindow):
         details.addWidget(self.path_label)
         controls = QHBoxLayout()
         self.automatic = QCheckBox("自动滚动")
+        self.automatic.setChecked(True)
         controls.addWidget(self.automatic)
         self.auto_settings_button = self._button("自动设置", self.configure_automatic, controls)
         self.automatic.toggled.connect(self.update_controls)
@@ -346,6 +355,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(not busy and not running)
         self.start_button.setText("继续采集" if running or self.store is not None else
                                  "开始自动采集" if self.automatic.isChecked() else "开始采集")
+        self.start_button.setToolTip(self.start_button.text() + ("：程序自动滚动阅读区" if self.automatic.isChecked() else "：请手动滚动阅读区"))
         self.start_button.setEnabled(not busy and self.region is not None and (not running or paused))
         self.pause_button.setEnabled(running and not paused)
         self.finish_button.setEnabled(running)
@@ -497,6 +507,8 @@ class MainWindow(QMainWindow):
             self.error(exc)
             return
         self.directory, self.region, self.metadata = directory, region, metadata
+        self.automatic.setChecked(True)
+        self.show_capture_hint()
         self.undo_stack.clear()
         self.store = self.review = None
         self.pages.clear()
@@ -731,8 +743,8 @@ class MainWindow(QMainWindow):
                 item.setForeground(QColor("#9b5607"))
             self.pages.addItem(item)
         self.pages.blockSignals(False)
-        warnings = self.review.export_warnings(self.metadata)
-        self.warning.setText("；".join(map(warning_text, warnings)) if warnings else "分页已识别。建议逐页检查页眉、页脚和边界后再导出。")
+        warnings = review_messages(self.review, self.metadata)
+        self.warning.setText("；".join(warnings) if warnings else "分页已识别。建议逐页检查页眉、页脚和边界后再导出。")
         if self.metadata.get("completion_reason") == "visible_bottom_and_no_motion":
             self.warning.setText("自动滚动已结束：多次无位移且可见页底。请核对最后一页，慢加载内容可能需要继续采集。\n" + self.warning.text())
         if self.review.geometry:
@@ -963,7 +975,7 @@ class MainWindow(QMainWindow):
     def export_pdf(self):
         if not self.review or self.job or self.worker:
             return
-        warnings = [warning_text(value) for value in self.review.export_warnings(self.metadata)]
+        warnings = review_messages(self.review, self.metadata)
         if warnings and not self.reviewed.isChecked():
             self.error("存在待确认页面或采集告警。请检查预览，并勾选底部的逐页检查确认框后再导出。\n\n" + "\n".join(warnings))
             return
